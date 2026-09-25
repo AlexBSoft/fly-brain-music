@@ -51,8 +51,20 @@ const audioState = {
   muted: false,
   bassAverage: 0.05,
   lastBeatAt: -10,
+  beatInterval: 0.52,
+  lastSampleAt: 0,
+  spectralAverage: 0.008,
+  previousSpectrum: null,
+  spectrumReady: false,
+  previousBands: { sub: 0, lowMid: 0, presence: 0, air: 0 },
 };
-const signal = { bass: 0, mid: 0, treble: 0, level: 0, beat: 0 };
+// Amplitudes are 0..1. beatCount counts accents; beatPhase runs 0..1 between them.
+const signal = {
+  bass: 0, mid: 0, treble: 0, level: 0, beat: 0,
+  sub: 0, lowMid: 0, presence: 0, air: 0,
+  onset: 0, kick: 0, snare: 0, hat: 0,
+  pulse: 0, groove: 0, beatPhase: 1, beatCount: 0,
+};
 const visual = { luma: 0.34, motion: 0.08, hue: 0.55 };
 let metrics = { vision: 0, hearing: 0, motion: 0, focus: 0 };
 let started = false;
@@ -109,6 +121,7 @@ async function ensureAudio() {
       context, source, analyser, gain, recordingDestination,
       frequency: new Uint8Array(analyser.frequencyBinCount),
       waveform: new Uint8Array(analyser.fftSize),
+      previousSpectrum: new Uint8Array(analyser.frequencyBinCount),
     });
   }
   if (audioState.context.state !== 'running') await audioState.context.resume();
@@ -152,9 +165,9 @@ function updateTimeUi() {
 }
 
 function meanBand(minHz, maxHz) {
-  const { frequency, context } = audioState;
-  if (!frequency || !context) return 0;
-  const binHz = context.sampleRate / 2048;
+  const { analyser, frequency, context } = audioState;
+  if (!analyser || !frequency || !context) return 0;
+  const binHz = context.sampleRate / analyser.fftSize;
   const start = Math.max(1, Math.floor(minHz / binHz));
   const end = Math.min(frequency.length, Math.ceil(maxHz / binHz));
   let sum = 0;
@@ -162,19 +175,45 @@ function meanBand(minHz, maxHz) {
   return sum / Math.max(1, end - start) / 255;
 }
 
+function resetAudioAnalysis() {
+  audioState.bassAverage = 0.05;
+  audioState.lastBeatAt = -10;
+  audioState.beatInterval = 0.52;
+  audioState.lastSampleAt = 0;
+  audioState.spectralAverage = 0.008;
+  audioState.spectrumReady = false;
+  audioState.previousSpectrum?.fill(0);
+  for (const key of Object.keys(audioState.previousBands)) audioState.previousBands[key] = 0;
+  for (const key of Object.keys(signal)) signal[key] = 0;
+  signal.beatPhase = 1;
+  peakFrequency = 0;
+}
+
 function sampleAudio(now) {
   const { analyser, frequency, waveform, context } = audioState;
   if (!analyser || video.paused || video.ended) {
-    for (const key of ['bass', 'mid', 'treble', 'level']) signal[key] *= 0.91;
+    for (const key of ['bass', 'mid', 'treble', 'level', 'sub', 'lowMid', 'presence', 'air']) signal[key] *= 0.91;
+    for (const key of ['onset', 'kick', 'snare', 'hat', 'pulse']) signal[key] *= 0.84;
     signal.beat *= 0.86;
+    signal.groove *= 0.995;
+    audioState.spectrumReady = false;
     peakFrequency *= 0.9;
     return;
   }
   analyser.getByteFrequencyData(frequency);
   analyser.getByteTimeDomainData(waveform);
+  const deltaTime = clamp(now - audioState.lastSampleAt, 1 / 120, 0.1);
+  audioState.lastSampleAt = now;
+  const mediaTime = video.currentTime;
+
+  const sub = clamp(meanBand(28, 85) * 2.45);
   const bass = clamp(meanBand(38, 190) * 2.0);
+  const lowMid = clamp(meanBand(190, 650) * 2.55);
   const mid = clamp(meanBand(190, 2100) * 2.25);
+  const presence = clamp(meanBand(1800, 5000) * 3.0);
   const treble = clamp(meanBand(2100, 9000) * 3.2);
+  const air = clamp(meanBand(5500, 13000) * 4.2);
+
   let power = 0;
   for (let i = 0; i < waveform.length; i += 4) {
     const sample = (waveform[i] - 128) / 128;
@@ -185,11 +224,60 @@ function sampleAudio(now) {
   signal.mid += (mid - signal.mid) * 0.25;
   signal.treble += (treble - signal.treble) * 0.22;
   signal.level += (level - signal.level) * 0.28;
+  signal.sub += (sub - signal.sub) * 0.34;
+  signal.lowMid += (lowMid - signal.lowMid) * 0.27;
+  signal.presence += (presence - signal.presence) * 0.28;
+  signal.air += (air - signal.air) * 0.25;
+
+  // Positive spectral flux captures attacks without assuming a fixed tempo.
+  // An adaptive floor works across quiet and loud user files.
+  let rise = 0;
+  let bins = 0;
+  const previousSpectrum = audioState.previousSpectrum;
+  for (let index = 2; index < Math.min(frequency.length, 580); index += 2) {
+    if (audioState.spectrumReady) rise += Math.max(0, frequency[index] - previousSpectrum[index]);
+    previousSpectrum[index] = frequency[index];
+    bins += 1;
+  }
+  const spectralFlux = rise / Math.max(1, bins) / 255;
+  audioState.spectrumReady = true;
+  audioState.spectralAverage += (spectralFlux - audioState.spectralAverage) * 0.022;
+  const onset = clamp((spectralFlux - audioState.spectralAverage * 0.66) / Math.max(0.008, audioState.spectralAverage * 2.2));
+  signal.onset = Math.max(signal.onset * Math.exp(-deltaTime * 10), onset);
+
+  const previousBands = audioState.previousBands;
+  const kick = clamp(Math.max(0, sub - previousBands.sub) * 7.5);
+  const snare = clamp((Math.max(0, lowMid - previousBands.lowMid) * 5.4 + Math.max(0, presence - previousBands.presence) * 2.3) * 0.8);
+  const hat = clamp(Math.max(0, air - previousBands.air) * 8.0);
+  previousBands.sub = sub;
+  previousBands.lowMid = lowMid;
+  previousBands.presence = presence;
+  previousBands.air = air;
+  signal.kick = Math.max(signal.kick * Math.exp(-deltaTime * 14), kick);
+  signal.snare = Math.max(signal.snare * Math.exp(-deltaTime * 13), snare);
+  signal.hat = Math.max(signal.hat * Math.exp(-deltaTime * 16), hat);
+
   audioState.bassAverage += (bass - audioState.bassAverage) * 0.025;
-  if (bass > Math.max(0.21, audioState.bassAverage * 1.38) && now - audioState.lastBeatAt > 0.24) {
+  const bassAccent = bass > Math.max(0.2, audioState.bassAverage * 1.28) && kick > 0.13;
+  const broadAccent = onset > 0.53 && (kick > 0.15 || snare > 0.34);
+  if ((bassAccent || broadAccent) && mediaTime - audioState.lastBeatAt > 0.24) {
+    const interval = mediaTime - audioState.lastBeatAt;
+    if (interval > 0.26 && interval < 1.25) {
+      const regularity = 1 - clamp(Math.abs(interval - audioState.beatInterval) / Math.max(0.16, audioState.beatInterval * 0.58));
+      signal.groove += (regularity - signal.groove) * 0.22;
+      audioState.beatInterval += (interval - audioState.beatInterval) * 0.2;
+    }
     signal.beat = 1;
-    audioState.lastBeatAt = now;
-  } else signal.beat *= 0.87;
+    signal.pulse = 1;
+    signal.beatCount += 1;
+    signal.beatPhase = 0;
+    audioState.lastBeatAt = mediaTime;
+  } else {
+    signal.beat *= Math.exp(-deltaTime * 8.4);
+    signal.pulse *= Math.exp(-deltaTime * 4.4);
+    signal.beatPhase = clamp((mediaTime - audioState.lastBeatAt) / audioState.beatInterval);
+    signal.groove *= Math.exp(-deltaTime * 0.12);
+  }
 
   let strongest = 1;
   for (let index = 2; index < Math.min(400, frequency.length); index += 1) {
@@ -285,6 +373,7 @@ function loadFile(file) {
   }
   if (recording) stopRecording();
   video.pause();
+  resetAudioAnalysis();
   if (objectUrl) URL.revokeObjectURL(objectUrl);
   objectUrl = URL.createObjectURL(file);
   video.src = objectUrl;
@@ -508,7 +597,11 @@ video.addEventListener('pause', updatePlaybackState);
 video.addEventListener('ended', updatePlaybackState);
 video.addEventListener('loadedmetadata', updateTimeUi);
 video.addEventListener('durationchange', updateTimeUi);
-video.addEventListener('seeking', () => { previousPixels = null; visual.motion = 0; });
+video.addEventListener('seeking', () => {
+  previousPixels = null;
+  visual.motion = 0;
+  resetAudioAnalysis();
+});
 video.addEventListener('error', () => showToast('Этот файл не удалось открыть. Попробуйте MP4, WebM или MP3.'));
 const stageSection = document.querySelector('.stage-section');
 let dragDepth = 0;

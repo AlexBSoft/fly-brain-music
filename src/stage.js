@@ -212,11 +212,13 @@ export function createStage({ canvas, video }) {
   const flyHeadMat = new THREE.MeshStandardMaterial({ color: 0xb98b6b, metalness: 0.22, roughness: 0.52, flatShading: true });
   const thorax = mesh(new THREE.IcosahedronGeometry(0.56, 1), flyBody, fly);
   thorax.scale.set(1, 0.84, 1.16);
-  const abdomen = mesh(new THREE.IcosahedronGeometry(0.62, 1), flyAbdomen, fly);
-  abdomen.position.set(0, -0.04, 0.87);
+  const abdomenRig = new THREE.Group();
+  abdomenRig.position.set(0, -0.04, 0.87);
+  fly.add(abdomenRig);
+  const abdomen = mesh(new THREE.IcosahedronGeometry(0.62, 1), flyAbdomen, abdomenRig);
   abdomen.scale.set(0.82, 0.7, 1.36);
   for (let i = 0; i < 4; i++) {
-    const band = ring(0.46 - i * 0.035, 0.019, flyBands, 0, -0.03, 0.42 + i * 0.3, fly);
+    const band = ring(0.46 - i * 0.035, 0.019, flyBands, 0, 0.01, -0.45 + i * 0.3, abdomenRig);
     band.scale.y = 0.78 - i * 0.035;
   }
   const headRig = new THREE.Group();
@@ -225,6 +227,7 @@ export function createStage({ canvas, video }) {
   const head = mesh(new THREE.IcosahedronGeometry(0.5, 2), flyHeadMat, headRig);
   head.scale.set(1.05, 0.94, 0.92);
   const eyes = [];
+  const antennae = [];
   for (const side of [-1, 1]) {
     const eye = mesh(new THREE.IcosahedronGeometry(0.34, 2), eyeMat, headRig);
     eye.position.set(side * 0.39, 0.05, -0.09);
@@ -232,9 +235,13 @@ export function createStage({ canvas, video }) {
     eyes.push(eye);
     const glint = mesh(new THREE.IcosahedronGeometry(0.065, 1), new THREE.MeshBasicMaterial({ color: 0xffe8d4, toneMapped: false }), headRig);
     glint.position.set(side * 0.59, 0.18, -0.24);
-    rod(new THREE.Vector3(side * 0.16, 0.33, -0.28), new THREE.Vector3(side * 0.27, 0.7, -0.5), 0.016, flyBody, headRig);
-    const antennaTip = mesh(new THREE.IcosahedronGeometry(0.045, 0), flyBands, headRig);
-    antennaTip.position.set(side * 0.27, 0.7, -0.5);
+    const antenna = new THREE.Group();
+    antenna.position.set(side * 0.16, 0.33, -0.28);
+    headRig.add(antenna);
+    rod(new THREE.Vector3(), new THREE.Vector3(side * 0.11, 0.37, -0.22), 0.016, flyBody, antenna);
+    const antennaTip = mesh(new THREE.IcosahedronGeometry(0.045, 0), flyBands, antenna);
+    antennaTip.position.set(side * 0.11, 0.37, -0.22);
+    antennae.push({ pivot: antenna, side });
   }
   // Six articulated legs touch the rim of the perch.
   const legs = [];
@@ -407,72 +414,113 @@ export function createStage({ canvas, video }) {
   resize();
 
   let danceEnergy = 0;
-  let beatIndex = 0;
-  let beatAt = -1;
+  let detectedBeatCount = 0;
+  let detectedBeatAt = -1;
   let beatInterval = 0.53;
   let lastBeatValue = 0;
   let lastDanceTime = 0;
+  let lastWallTime = performance.now() * 0.001;
 
   function update({ time = 0, audio = {}, visual = {}, playing = false } = {}) {
     if (disposed) return;
     const t = Number.isFinite(time) ? time : 0;
     const bass = clamp(audio.bass), mid = clamp(audio.mid), treble = clamp(audio.treble);
     const level = clamp(audio.level), beat = clamp(audio.beat);
+    const sub = clamp(audio.sub ?? bass), lowMid = clamp(audio.lowMid ?? mid);
+    const presence = clamp(audio.presence ?? mid), air = clamp(audio.air ?? treble);
+    const onset = clamp(audio.onset ?? beat), kick = clamp(audio.kick ?? beat);
+    const snare = clamp(audio.snare ?? 0), hat = clamp(audio.hat ?? treble * 0.25);
+    const pulse = clamp(audio.pulse ?? beat), groove = clamp(audio.groove ?? 0.4);
     const luma = clamp(visual.luma), motion = clamp(visual.motion), hue = clamp(visual.hue);
     const activity = playing ? 1 : 0.28;
-    // Keep the choreography on the media clock. Each detected kick starts a
-    // new step, while the measured spacing carries the motion between kicks.
+
+    // The media clock drives steps; audio analysis provides the attack and
+    // intensity of each distinct gesture. A local beat estimate is a fallback.
     if (t < lastDanceTime - 0.3 || t > lastDanceTime + 2) {
-      beatAt = -1;
-      beatIndex = 0;
+      detectedBeatAt = -1;
+      detectedBeatCount = 0;
       lastBeatValue = 0;
     }
     lastDanceTime = t;
     if (playing && beat > 0.92 && lastBeatValue <= 0.92) {
-      const gap = t - beatAt;
-      if (beatAt >= 0 && gap > 0.28 && gap < 1.1) beatInterval += (gap - beatInterval) * 0.28;
-      beatAt = t;
-      beatIndex += 1;
+      const gap = t - detectedBeatAt;
+      if (detectedBeatAt >= 0 && gap > 0.28 && gap < 1.1) beatInterval += (gap - beatInterval) * 0.28;
+      detectedBeatAt = t;
+      detectedBeatCount += 1;
     }
     lastBeatValue = beat;
-    const beatAge = beatAt >= 0 ? t - beatAt : Infinity;
-    const beatPulse = playing && beatAge >= 0 ? Math.exp(-beatAge * 8) : 0;
-    const rhythm = beatAge >= 0 && beatAge < beatInterval * 2.2
-      ? (beatIndex + beatAge / beatInterval) * Math.PI
-      : t * Math.PI / beatInterval;
-    const stepSide = beatIndex % 2 ? 1 : -1;
-    const danceTarget = playing ? clamp(0.5 + bass * 0.48 + mid * 0.16 + level * 0.2) : 0;
-    danceEnergy += (danceTarget - danceEnergy) * (playing ? 0.11 : 0.08);
+    const beatCount = Number.isFinite(audio.beatCount) ? audio.beatCount : detectedBeatCount;
+    const fallbackPhase = detectedBeatAt >= 0 ? clamp((t - detectedBeatAt) / beatInterval) : 0;
+    const beatPhase = Number.isFinite(audio.beatPhase) ? clamp(audio.beatPhase) : fallbackPhase;
+    const rhythm = beatCount > 0 ? (beatCount + beatPhase) * Math.PI : t * Math.PI / beatInterval;
+    const side = beatCount % 2 ? 1 : -1;
+    const phraseAccent = beatCount > 0 && beatCount % 4 === 0 ? 1 : 0.35;
+    const wallTime = performance.now() * 0.001;
+    const delta = Math.min(0.05, Math.max(0, wallTime - lastWallTime));
+    lastWallTime = wallTime;
+    const danceTarget = playing ? clamp(0.25 + sub * 0.18 + lowMid * 0.22 + level * 0.2 + groove * 0.18) : 0;
+    danceEnergy += (danceTarget - danceEnergy) * (1 - Math.exp(-delta * (playing ? 6.5 : 5)));
+    const d = danceEnergy;
+
     const lightScale = theme === 'garden' ? 0.57 : theme === 'orbit' ? 0.78 : 1;
     primaryLight.intensity = (21 + (bass * 23 + beat * 16) * activity) * lightScale;
     secondaryLight.intensity = (19 + (mid * 15 + treble * 15) * activity) * lightScale;
     screenLight.intensity = 19 + luma * 34 * activity;
     screenLight.color.setHSL(0.52 + hue * 0.25, 0.68, 0.72);
+
+    // 1 sub-bass hover, 2 kick hop, 3 low-mid shuffle, 4 groove sway.
+    const step = Math.sin(rhythm);
+    const stepLift = Math.abs(step);
+    const hover = sub * (0.11 + stepLift * 0.18) + pulse * 0.06 + level * 0.045 * Math.sin(t * 3.1);
     fly.position.set(
-      -1.45 + Math.sin(rhythm) * 0.32 * danceEnergy + stepSide * beatPulse * 0.16,
-      1.6 + danceEnergy * (0.1 + Math.abs(Math.sin(rhythm)) * 0.25) + beatPulse * 0.23,
-      1.35 + Math.cos(rhythm) * 0.13 * danceEnergy,
+      -1.45 + d * (lowMid * step * 0.33 + groove * Math.sin(rhythm * 0.5) * 0.12) + side * kick * 0.09,
+      1.6 + d * (0.025 + hover) + kick * 0.27 + onset * 0.045,
+      1.35 + d * groove * Math.cos(rhythm) * 0.16,
     );
     flyFill.intensity = 24 + level * 7 * activity;
     flyRim.intensity = 28 + treble * 10 * activity;
-    fly.rotation.x = Math.sin(rhythm * 2 - 0.5) * 0.17 * danceEnergy - beatPulse * 0.13;
-    fly.rotation.y = -0.32 + Math.sin(rhythm) * 0.26 * danceEnergy + stepSide * beatPulse * 0.14 + motion * 0.04 * activity;
-    fly.rotation.z = Math.sin(rhythm) * 0.24 * danceEnergy + stepSide * beatPulse * 0.18;
-    headRig.rotation.x = Math.sin(rhythm * 2 + 0.4) * 0.23 * danceEnergy - beatPulse * 0.3;
-    headRig.rotation.z = Math.sin(rhythm + 0.5) * 0.12 * danceEnergy;
-    abdomen.rotation.z = Math.sin(rhythm - 0.6) * 0.15 * danceEnergy;
+
+    // 5 snare shoulder flick, 6 onset turn, 7 high-frequency shimmy.
+    fly.rotation.x = d * (lowMid * Math.sin(rhythm * 2 - 0.4) * 0.16 - sub * stepLift * 0.09) - snare * 0.15;
+    fly.rotation.y = -0.32 + d * (presence * Math.sin(t * 2.1) * 0.13 + groove * step * 0.17) + side * onset * 0.14 * phraseAccent + motion * 0.035 * activity;
+    fly.rotation.z = d * (mid * step * 0.28 + treble * Math.sin(t * 12.5) * 0.045) + side * snare * 0.17;
+
+    // 8 vocal head nod and 9 attentive side glance toward a changing screen.
+    headRig.rotation.x = d * presence * Math.sin(rhythm * 2 + 0.4) * 0.3 - kick * 0.21;
+    headRig.rotation.y = d * (presence * Math.sin(t * 2.7 + 0.3) * 0.14 + motion * 0.11);
+    headRig.rotation.z = d * mid * Math.sin(rhythm + 0.6) * 0.12 + snare * side * 0.07;
+
+    // 10 abdominal bass wag, 11 level-driven breathing.
+    abdomenRig.rotation.z = d * bass * Math.sin(rhythm - 0.5) * 0.25;
+    abdomenRig.rotation.y = d * sub * Math.sin(t * 3.7) * 0.15;
+    abdomenRig.rotation.x = -d * lowMid * stepLift * 0.09;
+    thorax.scale.y = 0.84 * (1 + d * level * (0.045 + 0.035 * Math.sin(t * 5.2)));
+    abdomen.scale.y = 0.7 * (1 + d * level * 0.055);
+
+    // 12 alternating kick punches, 13 snare steps, 14 hi-hat toe taps.
     for (const leg of legs) {
-      const lift = Math.max(0, Math.sin(rhythm + (leg.side < 0 ? 0 : Math.PI) + leg.index * 1.1));
-      const punch = leg.index === 0 && leg.side === stepSide ? beatPulse : 0;
-      leg.pivot.rotation.z = leg.side * (lift * danceEnergy * (leg.index === 0 ? 0.55 : 0.2) + punch * 0.75);
-      leg.pivot.rotation.x = -lift * danceEnergy * (leg.index === 0 ? 0.4 : 0.12);
+      const alternate = leg.side < 0 ? 0 : Math.PI;
+      const gait = Math.max(0, Math.sin(rhythm + alternate + leg.index * 0.9));
+      let lift;
+      if (leg.index === 0) lift = d * lowMid * gait * 0.55 + (leg.side === side ? kick * 0.83 : kick * 0.1);
+      else if (leg.index === 1) lift = d * groove * gait * 0.37 + (leg.side !== side ? snare * 0.36 : 0);
+      else lift = d * presence * gait * 0.18 + hat * 0.25;
+      leg.pivot.rotation.z = leg.side * lift;
+      leg.pivot.rotation.x = -lift * (leg.index === 0 ? 0.46 : 0.3);
+      leg.pivot.rotation.y = d * groove * Math.sin(rhythm + leg.index + alternate) * 0.12;
     }
-    const flutter = Math.sin(rhythm * 4 + treble * 1.5);
-    const wingOpen = 0.12 + danceEnergy * (0.32 + flutter * 0.2) + treble * 0.2 * activity + beatPulse * 0.25;
+
+    // 15 wing flutter follows air/cymbals, 16 antennae twitch on sharp highs.
+    const wingFlutter = Math.sin(t * (18 + air * 8) + rhythm * 0.5);
+    const wingOpen = 0.12 + d * (0.2 + air * (0.19 + wingFlutter * 0.14)) + hat * 0.21 + onset * 0.1;
     wings[0].rotation.z = -wingOpen;
-    wings[1].rotation.z = wingOpen;
-    wings[0].rotation.x = Math.sin(rhythm * 2) * 0.13 * danceEnergy;
-    wings[1].rotation.x = Math.sin(rhythm * 2 + 0.7) * 0.13 * danceEnergy;
+    wings[1].rotation.z = wingOpen * (0.94 + 0.06 * Math.sin(t * 5));
+    wings[0].rotation.x = d * air * Math.sin(t * 22 + 0.3) * 0.19;
+    wings[1].rotation.x = d * air * Math.sin(t * 22 + 1.2) * 0.19;
+    for (const antenna of antennae) {
+      antenna.pivot.rotation.z = antenna.side * (d * air * Math.sin(t * 19 + antenna.side) * 0.2 + hat * 0.29);
+      antenna.pivot.rotation.x = -d * treble * Math.sin(t * 13 + antenna.side) * 0.12 - onset * 0.13;
+    }
     wingMaterial.emissiveIntensity = 0.3 + treble * 1.4 * activity;
     eyeMat.emissiveIntensity = 1.15 + level * 1.5 * activity;
     plinthLip.material.emissiveIntensity = (0.9 + bass * 1.35 * activity) * (theme === 'garden' ? 0.26 : theme === 'orbit' ? 0.7 : 1);
