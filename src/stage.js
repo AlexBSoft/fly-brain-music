@@ -4,11 +4,14 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { createClubDepth } from './clubDepth.js';
+import { createHomeScene } from './homeScene.js';
+import { createGardenScene } from './gardenScene.js';
 
 const THEMES = {
   club: { background: 0x070719, fog: 0x08071a, floor: 0x121225, wall: 0x0b0b1d, primary: 0x5ceaff, secondary: 0xff4da9, accent: 0xffca89 },
   garden: { background: 0x071311, fog: 0x071611, floor: 0x10221d, wall: 0x0b1d19, primary: 0x7df6bc, secondary: 0xffcf80, accent: 0xf57f93 },
-  orbit: { background: 0x050b1e, fog: 0x070e20, floor: 0x0c162a, wall: 0x081328, primary: 0x81c7ff, secondary: 0xb48aff, accent: 0xffbd87 },
+  home: { background: 0x140e0e, fog: 0x1b1311, floor: 0x2b211e, wall: 0x2a201e, primary: 0xffd49b, secondary: 0xe9a078, accent: 0x9dc7b0 },
 };
 
 const clamp = (value) => Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0));
@@ -100,24 +103,18 @@ export function createStage({ canvas, video }) {
   for (let z = -8.5; z <= 8.5; z += 0.9) gridPositions.push(-9, 0.005, z, 9, 0.005, z);
   const gridGeo = new THREE.BufferGeometry();
   gridGeo.setAttribute('position', new THREE.Float32BufferAttribute(gridPositions, 3));
-  const grid = new THREE.LineSegments(gridGeo, new THREE.LineBasicMaterial({ color: palette.primary, transparent: true, opacity: 0.14, depthWrite: false }));
+  const grid = new THREE.LineSegments(gridGeo, new THREE.LineBasicMaterial({ color: palette.primary, transparent: true, opacity: 0.075, depthWrite: false }));
   scene.add(grid);
+  const clubFloorDecor = new THREE.Group();
+  scene.add(clubFloorDecor);
   const floorRings = [];
-  for (const [radius, opacity] of [[2.3, 0.32], [3.7, 0.22], [5.5, 0.12]]) {
-    const object = ring(radius, 0.015, roleMat('primary', { transparent: true, opacity, depthWrite: false }), -0.8, 0.02, -0.8, scene, Math.PI / 2);
+  for (const [radius, opacity] of [[2.3, 0.17], [3.7, 0.105], [5.5, 0.055]]) {
+    const object = ring(radius, 0.015, roleMat('primary', { transparent: true, opacity, depthWrite: false }), -0.8, 0.02, -0.8, clubFloorDecor, Math.PI / 2);
     floorRings.push(object);
   }
   for (let i = 0; i < 12; i++) {
     const angle = i * Math.PI / 6;
-    rod(new THREE.Vector3(-0.8 + Math.cos(angle) * 2.2, 0.025, -0.8 + Math.sin(angle) * 2.2), new THREE.Vector3(-0.8 + Math.cos(angle) * 5.4, 0.025, -0.8 + Math.sin(angle) * 5.4), 0.008, roleMat(i % 2 ? 'primary' : 'secondary', { transparent: true, opacity: 0.2, depthWrite: false }));
-  }
-  for (let i = -4; i <= 4; i++) {
-    const rib = box(0.075, 6.4, 0.12, glowMat(i % 2 ? 'secondary' : 'primary', 1.3), i * 1.8, 3.35, -8.48);
-    rib.rotation.z = i * 0.025;
-  }
-  for (let i = 0; i < 4; i++) {
-    const arch = ring(3.48 + i * 0.54, 0.023, roleMat(i % 2 ? 'secondary' : 'primary', { transparent: true, opacity: 0.7 - i * 0.13, depthWrite: false }), 0.9, 2.9, -7.9 - i * 0.13);
-    arch.scale.y = 0.7;
+    rod(new THREE.Vector3(-0.8 + Math.cos(angle) * 2.2, 0.025, -0.8 + Math.sin(angle) * 2.2), new THREE.Vector3(-0.8 + Math.cos(angle) * 5.4, 0.025, -0.8 + Math.sin(angle) * 5.4), 0.008, roleMat(i % 2 ? 'primary' : 'secondary', { transparent: true, opacity: 0.085, depthWrite: false }), clubFloorDecor);
   }
 
   // The TV has a fixed 16:9 aperture. The moving image is contained within it.
@@ -187,8 +184,26 @@ export function createStage({ canvas, video }) {
   video.addEventListener('loadeddata', onVideoReady);
   if (video.videoWidth) refreshVideoTexture();
 
-  // A gentle suggestion of light from the screen on the glossy floor.
-  const reflection = mesh(new THREE.PlaneGeometry(5.1, 6), roleMat('primary', { transparent: true, opacity: 0.065, depthWrite: false, side: THREE.DoubleSide }));
+  // Diffuse light from the picture fades naturally across the glossy floor.
+  const reflectionMaterial = new THREE.ShaderMaterial({
+    uniforms: { uColor: { value: new THREE.Color(palette.primary) }, uStrength: { value: 0.7 } },
+    vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `
+      uniform vec3 uColor;
+      uniform float uStrength;
+      varying vec2 vUv;
+      void main() {
+        vec2 p = (vUv - 0.5) * 2.0;
+        float glow = exp(-(p.x * p.x * 3.5 + p.y * p.y * 5.4));
+        float streak = exp(-(p.x * p.x * 26.0 + p.y * p.y * 2.7));
+        gl_FragColor = vec4(uColor, (glow * 0.12 + streak * 0.045) * uStrength);
+        #include <colorspace_fragment>
+      }
+    `,
+    transparent: true, blending: THREE.AdditiveBlending,
+    depthWrite: false, side: THREE.DoubleSide, toneMapped: false,
+  });
+  const reflection = mesh(new THREE.PlaneGeometry(6, 8), reflectionMaterial);
   reflection.rotation.x = -Math.PI / 2;
   reflection.position.set(TV_X, 0.025, -2.5);
 
@@ -200,6 +215,7 @@ export function createStage({ canvas, video }) {
   plinth.position.y = 0.39;
   const plinthLip = mesh(new THREE.CylinderGeometry(0.88, 0.88, 0.07, 10), glowMat('secondary', 1.5), perch);
   plinthLip.position.y = 0.74;
+  ring(0.88, 0.018, glowMat('secondary', 0.75), 0, 0.78, 0, perch, Math.PI / 2);
   const fly = new THREE.Group();
   fly.position.set(-1.45, 1.6, 1.35);
   fly.scale.setScalar(0.93);
@@ -285,6 +301,8 @@ export function createStage({ canvas, video }) {
   // Four recessed, deforming speaker cones put visible low-end motion in the room.
   // The outer rubber surround stays fixed while the diaphragm and dust cap travel.
   const club = new THREE.Group(); scene.add(club);
+  const clubDepth = createClubDepth(palette);
+  club.add(clubDepth.group);
   const equalizers = [];
   const speakerDrivers = [];
   const cabinetMat = new THREE.MeshStandardMaterial({ color: 0x242936, emissive: 0x111620, emissiveIntensity: 0.22, metalness: 0.62, roughness: 0.36, flatShading: true });
@@ -367,51 +385,114 @@ export function createStage({ canvas, video }) {
       equalizers.push(bar);
     }
   }
-  const beamMaterial = roleMat('primary', { transparent: true, opacity: 0.07, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+  // Crossed, softly tapered light sheets suggest shafts suspended in haze.
+  // The uneven density and narrow gobo streaks avoid a hard cone silhouette.
+  const beamVertex = `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      vec3 p = position;
+      p.x *= mix(1.45, 0.055, pow(uv.y, 0.85));
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+    }
+  `;
+  const beamFragment = `
+    uniform vec3 uColor;
+    uniform float uTime;
+    uniform float uStrength;
+    uniform float uSeed;
+    varying vec2 vUv;
+    void main() {
+      float x = abs(vUv.x * 2.0 - 1.0);
+      float core = exp(-x * x * 17.0);
+      float feather = exp(-x * x * 4.2);
+      float goboPhase = vUv.x * 24.0 + sin(vUv.y * 8.0 - uTime * 0.24) * 0.85 + uSeed * 2.7;
+      float gobo = 0.25 + 0.75 * pow(max(0.0, cos(goboPhase)), 2.7);
+      float drift = sin(vUv.y * 26.0 - uTime * 0.67 + uSeed) *
+        sin(vUv.x * 37.0 + vUv.y * 8.0 + uTime * 0.31);
+      float haze = clamp(0.77 + 0.13 * drift + 0.1 * sin(vUv.y * 15.0 + uSeed), 0.35, 1.0);
+      float lengthFade = smoothstep(0.015, 0.16, vUv.y) *
+        (1.0 - smoothstep(0.88, 1.0, vUv.y));
+      float density = (core * 0.14 + feather * 0.016) *
+        mix(0.52, 1.0, vUv.y) * gobo * haze * lengthFade * uStrength;
+      gl_FragColor = vec4(uColor * 1.28, density);
+      #include <colorspace_fragment>
+    }
+  `;
+  const poolFragment = `
+    uniform vec3 uColor;
+    uniform float uStrength;
+    varying vec2 vUv;
+    void main() {
+      float radius = length((vUv - 0.5) * 2.0);
+      float spill = pow(1.0 - smoothstep(0.08, 1.0, radius), 2.4);
+      gl_FragColor = vec4(uColor * 1.15, spill * 0.17 * uStrength);
+      #include <colorspace_fragment>
+    }
+  `;
+  const poolVertex = `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `;
+  const beamPlane = new THREE.PlaneGeometry(2, 6.08);
+  const poolPlane = new THREE.PlaneGeometry(2.9, 2.9);
   const beams = [];
+  const beamSweep = new THREE.Vector3();
   for (let i = 0; i < 5; i++) {
-    const x = -5 + i * 2.5;
-    const beam = mesh(new THREE.CylinderGeometry(0.02, 0.85, 5.9, 14, 1, true), beamMaterial, club);
-    beam.position.set(x, 3.35, -1.5 - (i % 2) * 1.4);
-    beams.push(beam);
-    const lamp = mesh(new THREE.IcosahedronGeometry(0.18, 1), glowMat(i % 2 ? 'secondary' : 'primary', 3), club);
-    lamp.position.set(x, 6.23, beam.position.z);
+    const role = ['primary', 'secondary', 'accent', 'primary', 'secondary'][i];
+    const rig = new THREE.Group();
+    rig.position.set(-5 + i * 2.5, 6.2, -1.5 - (i % 2) * 1.4);
+    club.add(rig);
+    const uniforms = {
+      uColor: { value: new THREE.Color(palette[role]) },
+      uTime: { value: 0 },
+      uStrength: { value: 0.6 },
+      uSeed: { value: i * 2.43 + 0.8 },
+    };
+    const material = new THREE.ShaderMaterial({
+      uniforms, vertexShader: beamVertex, fragmentShader: beamFragment,
+      transparent: true, blending: THREE.AdditiveBlending,
+      depthWrite: false, side: THREE.DoubleSide, toneMapped: false,
+    });
+    for (let layer = 0; layer < 3; layer++) {
+      const shaft = mesh(beamPlane, material, rig);
+      shaft.position.y = -3.04;
+      shaft.rotation.y = layer * Math.PI / 3;
+    }
+    const housing = mesh(new THREE.CylinderGeometry(0.2, 0.26, 0.32, 12), darkMetal, rig);
+    housing.position.y = -0.05;
+    const bezel = mesh(new THREE.TorusGeometry(0.195, 0.025, 6, 24), edgeMetal, rig);
+    bezel.rotation.x = Math.PI / 2;
+    bezel.position.y = -0.22;
+    const lens = mesh(new THREE.CircleGeometry(0.17, 24), glowMat(role, 1.5), rig);
+    lens.rotation.x = Math.PI / 2;
+    lens.position.y = -0.225;
+
+    const poolMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        uColor: { value: new THREE.Color(palette[role]) },
+        uStrength: { value: 0.6 },
+      },
+      vertexShader: poolVertex, fragmentShader: poolFragment,
+      transparent: true, blending: THREE.AdditiveBlending,
+      depthWrite: false, side: THREE.DoubleSide, toneMapped: false,
+    });
+    const pool = mesh(poolPlane, poolMaterial, club);
+    pool.rotation.x = -Math.PI / 2;
+    pool.position.set(rig.position.x, 0.03, rig.position.z);
+    beams.push({ rig, material, pool, role });
   }
 
-  const garden = new THREE.Group(); scene.add(garden);
-  const leaves = [];
-  for (let i = 0; i < 24; i++) {
-    const side = i % 2 ? 1 : -1;
-    const x = side * (4.4 + (i % 4) * 0.38);
-    const z = -7.5 + (i % 6) * 1.2;
-    const stem = rod(new THREE.Vector3(x, 0.1, z), new THREE.Vector3(x - side * 0.35, 1.0 + (i % 5) * 0.33, z - 0.3), 0.026, glowMat('primary', 0.4), garden);
-    const leaf = mesh(new THREE.IcosahedronGeometry(0.43, 0), i % 3 ? glowMat('primary', 1.2) : glowMat('secondary', 1), garden);
-    leaf.position.copy(stem.position).add(new THREE.Vector3(0, 0.35, 0));
-    leaf.scale.set(0.34, 1.25, 0.66); leaf.rotation.z = side * 0.35;
-    leaves.push(leaf);
-  }
-  for (let i = 0; i < 9; i++) {
-    const cap = mesh(new THREE.ConeGeometry(0.4 + (i % 3) * 0.16, 0.35, 7), glowMat(i % 2 ? 'secondary' : 'primary', 1.7), garden);
-    cap.rotation.x = Math.PI; cap.position.set(-5.9 + i * 1.5, 0.8 + (i % 3) * 0.25, -4.8 - (i % 2) * 1.2);
-    rod(new THREE.Vector3(cap.position.x, 0.03, cap.position.z), new THREE.Vector3(cap.position.x, cap.position.y, cap.position.z), 0.055, darkMetal, garden);
-  }
+  const gardenScene = createGardenScene(THREE, THEMES.garden);
+  scene.add(gardenScene.group);
 
-  const orbit = new THREE.Group(); scene.add(orbit);
-  const orbitRings = [];
-  for (let i = 0; i < 5; i++) {
-    const halo = ring(1.4 + i * 0.46, 0.023, roleMat(i % 2 ? 'secondary' : 'primary', { transparent: true, opacity: 0.7 - i * 0.08, depthWrite: false }), -4.4, 3.1, -7.1, orbit);
-    halo.rotation.y = i * 0.25; halo.rotation.x = i * 0.3;
-    orbitRings.push(halo);
-  }
-  for (let i = 0; i < 13; i++) {
-    const angle = i * 2.399;
-    const radius = 1.5 + (i % 4) * 0.56;
-    const rock = mesh(new THREE.DodecahedronGeometry(0.16 + (i % 3) * 0.08, 0), i % 2 ? edgeMetal : glowMat('secondary', 0.8), orbit);
-    rock.position.set(-4.4 + Math.cos(angle) * radius, 3.1 + Math.sin(angle) * radius, -7.2 + (i % 3) * 0.3);
-    orbitRings.push(rock);
-  }
+  const homeScene = createHomeScene(THREE, THEMES.home);
+  scene.add(homeScene.group);
 
-  // Sparse drifting dust and a small neural halo add depth without shader heavy particles.
+  // Sparse drifting dust adds depth without shader-heavy particles.
   const dustPositions = new Float32Array(360 * 3);
   let seed = 321989;
   const random = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
@@ -419,20 +500,6 @@ export function createStage({ canvas, video }) {
   const dustGeo = new THREE.BufferGeometry(); dustGeo.setAttribute('position', new THREE.BufferAttribute(dustPositions, 3));
   const dustMaterial = new THREE.PointsMaterial({ color: palette.primary, size: 0.042, transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true });
   const dust = new THREE.Points(dustGeo, dustMaterial); scene.add(dust);
-  const neural = new THREE.Group(); neural.position.set(-3.8, 3.65, -0.8); scene.add(neural);
-  const neuralShell = mesh(new THREE.IcosahedronGeometry(0.6, 2), roleMat('primary', { wireframe: true, transparent: true, opacity: 0.35, depthWrite: false }), neural);
-  neuralShell.scale.set(1.25, 0.78, 0.86);
-  const neurons = [];
-  for (let i = 0; i < 28; i++) {
-    const a = i * 2.39996, v = -0.9 + 1.8 * i / 27;
-    const r = Math.sqrt(1 - v * v);
-    const node = mesh(new THREE.IcosahedronGeometry(0.04 + (i % 7 === 0 ? 0.035 : 0), 0), i % 3 ? glowMat('primary', 1) : glowMat('secondary', 1), neural);
-    node.position.set(Math.cos(a) * r * 0.73, v * 0.45, Math.sin(a) * r * 0.52);
-    neurons.push(node);
-  }
-  const neuralRing = ring(0.94, 0.012, roleMat('secondary', { transparent: true, opacity: 0.75, depthWrite: false }), 0, 0, 0, neural);
-  neuralRing.rotation.x = 0.42; neuralRing.scale.y = 0.75;
-
   let theme = 'club';
   let disposed = false;
   function setTheme(name) {
@@ -441,21 +508,41 @@ export function createStage({ canvas, video }) {
     scene.background.set(colors.background);
     scene.fog.color.set(colors.fog);
     floorMat.color.set(colors.floor); wallMat.color.set(colors.wall);
+    floorMat.metalness = theme === 'club' ? 0.82 : theme === 'garden' ? 0.18 : 0.08;
+    floorMat.roughness = theme === 'club' ? 0.35 : 0.79;
+    wallMat.metalness = theme === 'club' ? 0.48 : 0.06;
+    wallMat.roughness = theme === 'club' ? 0.57 : 0.89;
+    scene.fog.density = theme === 'garden' ? 0.023 : theme === 'home' ? 0.014 : 0.018;
+    renderer.toneMappingExposure = theme === 'garden' ? 1.16 : theme === 'home' ? 1.2 : 1.27;
+    hemisphere.color.set(theme === 'home' ? 0xffd9b8 : theme === 'garden' ? 0xc6ffe1 : 0x91b4ff);
+    hemisphere.groundColor.set(theme === 'home' ? 0x362119 : theme === 'garden' ? 0x193327 : 0x161227);
+    hemisphere.intensity = theme === 'garden' ? 1.48 : theme === 'home' ? 1.18 : 1.05;
+    flyRim.color.set(theme === 'home' ? 0xffd29d : theme === 'garden' ? 0x91ffd6 : 0x71e8ff);
     primaryLight.color.set(colors.primary); secondaryLight.color.set(colors.secondary);
     dustMaterial.color.set(colors.primary); grid.material.color.set(colors.primary);
     for (const { material, role, kind } of roleMats) {
       if (kind === 'emissive') {
         material.emissive.set(colors[role]);
-        material.emissiveIntensity = material.userData.baseEmissiveIntensity * (theme === 'garden' ? 0.45 : theme === 'orbit' ? 0.72 : 1);
+        material.emissiveIntensity = material.userData.baseEmissiveIntensity * (theme === 'garden' ? 0.45 : theme === 'home' ? 0.34 : 1);
       }
       else material.color.set(colors[role]);
     }
-    bloom.strength = theme === 'garden' ? 0.36 : theme === 'orbit' ? 0.5 : 0.67;
+    for (const beam of beams) {
+      beam.material.uniforms.uColor.value.set(colors[beam.role]);
+      beam.pool.material.uniforms.uColor.value.set(colors[beam.role]);
+    }
+    clubDepth.setPalette(colors);
+    homeScene.setPalette(colors);
+    gardenScene.setPalette(colors);
+    reflectionMaterial.uniforms.uColor.value.set(colors.primary);
+    bloom.strength = theme === 'garden' ? 0.24 : theme === 'home' ? 0.22 : 0.67;
     bloom.radius = 0.38;
-    bloom.threshold = 0.88;
+    bloom.threshold = theme === 'club' ? 0.88 : 0.93;
     club.visible = theme === 'club';
-    garden.visible = theme === 'garden';
-    orbit.visible = theme === 'orbit';
+    grid.visible = theme === 'club';
+    clubFloorDecor.visible = theme === 'club';
+    gardenScene.group.visible = theme === 'garden';
+    homeScene.group.visible = theme === 'home';
     return theme;
   }
   setTheme('club');
@@ -588,11 +675,12 @@ export function createStage({ canvas, video }) {
     danceEnergy += (danceTarget - danceEnergy) * (1 - Math.exp(-delta * (playing ? 7 : 5)));
     const d = danceEnergy;
 
-    const lightScale = theme === 'garden' ? 0.57 : theme === 'orbit' ? 0.78 : 1;
+    const lightScale = theme === 'garden' ? 0.57 : theme === 'home' ? 0.49 : 1;
     primaryLight.intensity = (21 + (bass * 23 + beat * 16) * activity) * lightScale;
     secondaryLight.intensity = (19 + (mid * 15 + treble * 15) * activity) * lightScale;
-    screenLight.intensity = 19 + luma * 34 * activity;
+    screenLight.intensity = theme === 'club' ? 19 + luma * 34 * activity : 8 + luma * 12 * activity;
     screenLight.color.setHSL(0.52 + hue * 0.25, 0.68, 0.72);
+    reflectionMaterial.uniforms.uStrength.value = 0.48 + luma * 0.7 * activity;
 
     // Side slides, shoulder rolls, head-talk and cross steps remain active
     // through a verse. The low end adds a harder bounce, shake and leg punch.
@@ -608,7 +696,7 @@ export function createStage({ canvas, video }) {
       1.35 + swagger * pose[1] * 0.21 + bassMode * d * Math.cos(rhythm) * 0.065,
     );
     flyFill.intensity = 24 + level * 7 * activity;
-    flyRim.intensity = 28 + treble * 10 * activity;
+    flyRim.intensity = (theme === 'home' ? 16 : 28) + treble * 10 * activity;
 
     const shoulderRoll = swagger * pose[2] * 0.32 + side * snare * 0.17 + vocalPulse * verse * 0.12;
     fly.rotation.x = swagger * (pose[4] * 0.17 + pose[1] * 0.09) - bassMode * stepLift * 0.13 - snare * 0.09;
@@ -696,10 +784,10 @@ export function createStage({ canvas, video }) {
     }
     wingMaterial.emissiveIntensity = 0.3 + treble * 1.4 * activity;
     eyeMat.emissiveIntensity = 1.15 + level * 1.5 * activity;
-    plinthLip.material.emissiveIntensity = (0.9 + bass * 1.35 * activity) * (theme === 'garden' ? 0.26 : theme === 'orbit' ? 0.7 : 1);
+    plinthLip.material.emissiveIntensity = (0.19 + bass * 0.48 * activity) * (theme === 'garden' ? 0.26 : theme === 'home' ? 0.38 : 1);
     for (let i = 0; i < floorRings.length; i++) {
       floorRings[i].scale.setScalar(1 + beat * (0.025 + i * 0.008) * activity);
-      floorRings[i].material.opacity = (0.31 - i * 0.09) + bass * 0.25 * activity;
+      floorRings[i].material.opacity = (0.17 - i * 0.055) + bass * 0.13 * activity;
     }
     for (let i = 0; i < equalizers.length; i++) {
       const bar = equalizers[i];
@@ -708,18 +796,22 @@ export function createStage({ canvas, video }) {
         bar.scale.y = value; bar.position.y = -1.82 + 0.175 * value;
       }
     }
-    for (let i = 0; i < beams.length; i++) beams[i].rotation.z = Math.sin(t * (0.4 + motion * 0.7) + i * 1.13) * 0.13;
-    beamMaterial.opacity = 0.045 + beat * 0.08 * activity;
-    for (let i = 0; i < leaves.length; i++) leaves[i].rotation.z = (i % 2 ? 1 : -1) * (0.35 + Math.sin(t * 0.75 + i) * 0.09);
-    for (let i = 0; i < orbitRings.length; i++) orbitRings[i].rotation.y += playing ? 0.0003 * (1 + i % 3) : 0;
-    neural.rotation.y = Math.sin(t * 0.34) * 0.2;
-    neuralShell.rotation.y = t * 0.16;
-    neuralRing.rotation.z = t * 0.21;
-    for (let i = 0; i < neurons.length; i++) {
-      const pulse = 0.45 + 0.55 * Math.sin(t * (2.1 + i % 4) + i * 1.7);
-      neurons[i].scale.setScalar(0.8 + pulse * 0.7 + (i % 3 ? treble : bass) * 0.7 * activity);
-      neurons[i].material.emissiveIntensity = (0.6 + pulse + level * 1.3 * activity) * (theme === 'garden' ? 0.38 : theme === 'orbit' ? 0.76 : 1);
+    for (let i = 0; i < beams.length; i++) {
+      const beam = beams[i];
+      const crossedAngle = [0.22, 0.12, 0, -0.14, -0.22][i];
+      beam.rig.rotation.z = crossedAngle + Math.sin(t * (0.34 + motion * 0.22) + i * 1.13) * (0.13 + motion * 0.095);
+      beam.rig.rotation.x = Math.sin(t * 0.29 + i * 1.72) * 0.13;
+      beam.material.uniforms.uTime.value = t;
+      const pulse = (beat * 0.42 + (i % 2 ? treble : bass) * 0.4 + onset * 0.22) * activity;
+      const strength = 0.55 + pulse + Math.sin(t * 1.25 + i * 1.7) * 0.04;
+      beam.material.uniforms.uStrength.value = strength;
+      beam.pool.material.uniforms.uStrength.value = strength;
+      beamSweep.set(0, -6.08, 0).applyEuler(beam.rig.rotation);
+      beam.pool.position.set(beam.rig.position.x + beamSweep.x, 0.03, beam.rig.position.z + beamSweep.z);
     }
+    clubDepth.update(t, audio, visual, playing);
+    homeScene.update(t, audio, visual, playing);
+    gardenScene.update(t, audio, visual, playing);
     dust.rotation.y = Math.sin(t * 0.055) * 0.015;
     dustMaterial.opacity = 0.43 + treble * 0.5 * activity;
     controls.update();

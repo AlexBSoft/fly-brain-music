@@ -24,7 +24,7 @@ let stageFailed = false;
 const themes = {
   club: { name: 'НОЧНОЙ КЛУБ', short: 'Клуб', id: 'CLUB_01', scene: 'НОЧНОЙ КЛУБ' },
   garden: { name: 'ОРАНЖЕРЕЯ', short: 'Оранжерея', id: 'GARDEN_02', scene: 'ОРАНЖЕРЕЯ' },
-  orbit: { name: 'ОРБИТА', short: 'Орбита', id: 'ORBIT_03', scene: 'ОРБИТА' },
+  home: { name: 'ДОМ', short: 'Дом', id: 'HOME_03', scene: 'ДОМ' },
 };
 let theme = 'club';
 let stage;
