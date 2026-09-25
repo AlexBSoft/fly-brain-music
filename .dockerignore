@@ -1,0 +1,19 @@
+# Dependencies and generated output are rebuilt inside the image.
+node_modules
+**/node_modules
+dist
+**/dist
+coverage
+.vite
+.npm-cache
+
+# Local history, secrets, and development artifacts.
+.git
+.gitignore
+.env
+.env.*
+*.log
+*.tmp
+*.swp
+.DS_Store
+Thumbs.db
