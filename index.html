@@ -17,11 +17,26 @@
           <header class="topbar">
             <div class="topbar-actions">
               <span class="system-indicator"><i aria-hidden="true"></i><span id="system-status">СЦЕНА ГОТОВА</span></span>
+              <button id="debug-toggle" class="icon-button debug-toggle" type="button" title="Показать движение и звук · D" aria-label="Показать отладку движений и звука" aria-controls="debug-panel" aria-expanded="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 14h3l2.5-6 3 10 3-8 2 4H21" /></svg>
+              </button>
               <button id="fullscreen-btn" class="icon-button fullscreen-button" type="button" title="На весь экран" aria-label="На весь экран">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" /></svg>
               </button>
             </div>
           </header>
+
+          <aside id="debug-panel" class="debug-panel" aria-label="Отладка движения мухи и звука" hidden>
+            <div class="debug-panel-head">
+              <div><span class="debug-kicker">DANCE LAB / LIVE</span><strong>Движение мухи</strong></div>
+              <span class="debug-key">D</span>
+            </div>
+            <div class="debug-state"><span id="debug-mode">—</span><span id="debug-gesture">—</span></div>
+            <div class="debug-section-title"><span>ЗВУК → ДВИЖЕНИЕ</span><span>СИГНАЛ</span></div>
+            <div id="debug-audio-rows" class="debug-rows"></div>
+            <div class="debug-section-title"><span>АМПЛИТУДЫ МУХИ</span><span>ЗНАЧЕНИЕ</span></div>
+            <div id="debug-motion-rows" class="debug-rows"></div>
+          </aside>
 
           <div class="neural-hologram" aria-label="Голограмма нейронной активности">
             <div class="hologram-heading">

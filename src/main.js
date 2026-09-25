@@ -1,6 +1,7 @@
 import './style.css';
 import { createStage } from './stage.js';
 import { createBrainViz } from './brain.js';
+import { createDebugPanel } from './debug.js';
 
 const $ = (id) => document.getElementById(id);
 const video = $('source-video');
@@ -38,6 +39,7 @@ try {
   stage = { update() {}, resize() {}, setTheme() {}, dispose() {} };
 }
 const brain = createBrainViz(brainCanvas);
+const debug = createDebugPanel({ panel: $('debug-panel'), toggleButton: $('debug-toggle') });
 
 const audioState = {
   context: null,
@@ -46,24 +48,29 @@ const audioState = {
   gain: null,
   recordingDestination: null,
   frequency: null,
+  floatFrequency: null,
   waveform: null,
   volume: 0.85,
   muted: false,
   bassAverage: 0.05,
+  subAverageDb: null,
   lastBeatAt: -10,
   beatInterval: 0.52,
+  phaseAnchor: 0,
   lastSampleAt: 0,
   spectralAverage: 0.008,
   previousSpectrum: null,
   spectrumReady: false,
-  previousBands: { sub: 0, lowMid: 0, presence: 0, air: 0 },
+  previousBands: { sub: 0, bass: 0, lowMid: 0, presence: 0, air: 0, vocalCore: 0, vocalFormants: 0 },
 };
-// Amplitudes are 0..1. beatCount counts accents; beatPhase runs 0..1 between them.
+// Amplitudes are 0..1. beatCount counts confirmed accents; beatPhase is a
+// continuously cycling visual rhythm, including passages without bass hits.
 const signal = {
   bass: 0, mid: 0, treble: 0, level: 0, beat: 0,
   sub: 0, lowMid: 0, presence: 0, air: 0,
   onset: 0, kick: 0, snare: 0, hat: 0,
-  pulse: 0, groove: 0, beatPhase: 1, beatCount: 0,
+  pulse: 0, groove: 0, beatPhase: 0, beatCount: 0,
+  vocal: 0, vocalPulse: 0, bassImpact: 0, sectionEnergy: 0, rhythmConfidence: 0,
 };
 const visual = { luma: 0.34, motion: 0.08, hue: 0.55 };
 let metrics = { vision: 0, hearing: 0, motion: 0, focus: 0 };
@@ -110,6 +117,9 @@ async function ensureAudio() {
     const analyser = context.createAnalyser();
     analyser.fftSize = 2048;
     analyser.smoothingTimeConstant = 0.74;
+    // The default -30 dB upper bound clips the sub-bass of mastered music.
+    analyser.minDecibels = -100;
+    analyser.maxDecibels = 0;
     const gain = context.createGain();
     gain.gain.value = audioState.muted ? 0 : audioState.volume;
     const recordingDestination = context.createMediaStreamDestination();
@@ -120,6 +130,7 @@ async function ensureAudio() {
     Object.assign(audioState, {
       context, source, analyser, gain, recordingDestination,
       frequency: new Uint8Array(analyser.frequencyBinCount),
+      floatFrequency: new Float32Array(analyser.frequencyBinCount),
       waveform: new Uint8Array(analyser.fftSize),
       previousSpectrum: new Uint8Array(analyser.frequencyBinCount),
     });
@@ -164,62 +175,87 @@ function updateTimeUi() {
   }
 }
 
-function meanBand(minHz, maxHz) {
-  const { analyser, frequency, context } = audioState;
-  if (!analyser || !frequency || !context) return 0;
+function meanDbBand(minHz, maxHz) {
+  const { analyser, floatFrequency, context } = audioState;
+  if (!analyser || !floatFrequency || !context) return -110;
   const binHz = context.sampleRate / analyser.fftSize;
   const start = Math.max(1, Math.floor(minHz / binHz));
-  const end = Math.min(frequency.length, Math.ceil(maxHz / binHz));
+  const end = Math.min(floatFrequency.length, Math.ceil(maxHz / binHz));
   let sum = 0;
-  for (let index = start; index < end; index += 1) sum += frequency[index];
-  return sum / Math.max(1, end - start) / 255;
+  for (let index = start; index < end; index += 1) {
+    const value = floatFrequency[index];
+    sum += Number.isFinite(value) ? Math.max(-110, value) : -110;
+  }
+  return sum / Math.max(1, end - start);
+}
+
+function softDb(value, midpoint, width) {
+  return 1 / (1 + Math.exp(-(value - midpoint) / width));
 }
 
 function resetAudioAnalysis() {
   audioState.bassAverage = 0.05;
+  audioState.subAverageDb = null;
   audioState.lastBeatAt = -10;
   audioState.beatInterval = 0.52;
+  audioState.phaseAnchor = video.currentTime || 0;
   audioState.lastSampleAt = 0;
   audioState.spectralAverage = 0.008;
   audioState.spectrumReady = false;
   audioState.previousSpectrum?.fill(0);
   for (const key of Object.keys(audioState.previousBands)) audioState.previousBands[key] = 0;
   for (const key of Object.keys(signal)) signal[key] = 0;
-  signal.beatPhase = 1;
+  signal.beatPhase = 0;
   peakFrequency = 0;
 }
 
 function sampleAudio(now) {
-  const { analyser, frequency, waveform, context } = audioState;
+  const { analyser, frequency, floatFrequency, waveform, context } = audioState;
   if (!analyser || video.paused || video.ended) {
-    for (const key of ['bass', 'mid', 'treble', 'level', 'sub', 'lowMid', 'presence', 'air']) signal[key] *= 0.91;
-    for (const key of ['onset', 'kick', 'snare', 'hat', 'pulse']) signal[key] *= 0.84;
+    for (const key of ['bass', 'mid', 'treble', 'level', 'sub', 'lowMid', 'presence', 'air', 'vocal', 'sectionEnergy']) signal[key] *= 0.91;
+    for (const key of ['onset', 'kick', 'snare', 'hat', 'pulse', 'vocalPulse', 'bassImpact']) signal[key] *= 0.84;
     signal.beat *= 0.86;
     signal.groove *= 0.995;
+    signal.rhythmConfidence *= 0.99;
     audioState.spectrumReady = false;
     peakFrequency *= 0.9;
     return;
   }
   analyser.getByteFrequencyData(frequency);
+  if (analyser.getFloatFrequencyData) analyser.getFloatFrequencyData(floatFrequency);
+  else for (let i = 0; i < floatFrequency.length; i += 1) floatFrequency[i] = -100 + frequency[i] * 100 / 255;
   analyser.getByteTimeDomainData(waveform);
   const deltaTime = clamp(now - audioState.lastSampleAt, 1 / 120, 0.1);
   audioState.lastSampleAt = now;
   const mediaTime = video.currentTime;
 
-  const sub = clamp(meanBand(28, 85) * 2.45);
-  const bass = clamp(meanBand(38, 190) * 2.0);
-  const lowMid = clamp(meanBand(190, 650) * 2.55);
-  const mid = clamp(meanBand(190, 2100) * 2.25);
-  const presence = clamp(meanBand(1800, 5000) * 3.0);
-  const treble = clamp(meanBand(2100, 9000) * 3.2);
-  const air = clamp(meanBand(5500, 13000) * 4.2);
+  // Floating point decibels retain the dynamics that 8-bit Web Audio bins
+  // lose on loud mastered tracks. Soft curves leave headroom in every band.
+  const subDb = meanDbBand(28, 85);
+  const bassDb = meanDbBand(38, 190);
+  const lowMidDb = meanDbBand(190, 650);
+  const midDb = meanDbBand(190, 2100);
+  const presenceDb = meanDbBand(1800, 5000);
+  const trebleDb = meanDbBand(2100, 9000);
+  const airDb = meanDbBand(5500, 13000);
+  const vocalCoreDb = meanDbBand(280, 1150);
+  const vocalFormantsDb = meanDbBand(750, 3000);
+  const vocalEdgeDb = meanDbBand(2400, 4200);
+  const sub = softDb(subDb, -17, 4);
+  const bass = softDb(bassDb, -25, 5);
+  const lowMid = softDb(lowMidDb, -43, 7);
+  const mid = softDb(midDb, -54, 8);
+  const presence = softDb(presenceDb, -60, 10);
+  const treble = softDb(trebleDb, -63, 9);
+  const air = softDb(airDb, -66, 10);
 
   let power = 0;
   for (let i = 0; i < waveform.length; i += 4) {
     const sample = (waveform[i] - 128) / 128;
     power += sample * sample;
   }
-  const level = clamp(Math.sqrt(power / (waveform.length / 4)) * 4);
+  const rms = Math.sqrt(power / (waveform.length / 4));
+  const level = rms / (rms + 0.36);
   signal.bass += (bass - signal.bass) * 0.34;
   signal.mid += (mid - signal.mid) * 0.25;
   signal.treble += (treble - signal.treble) * 0.22;
@@ -229,55 +265,107 @@ function sampleAudio(now) {
   signal.presence += (presence - signal.presence) * 0.28;
   signal.air += (air - signal.air) * 0.25;
 
-  // Positive spectral flux captures attacks without assuming a fixed tempo.
-  // An adaptive floor works across quiet and loud user files.
+  // The midrange's prominence over the lower accompaniment is a useful
+  // heuristic for a vocal verse. It is not source separation.
+  const vocalProminence = softDb(vocalFormantsDb - lowMidDb, -17, 5);
+  const vocalTarget = clamp(
+    softDb(vocalCoreDb, -52, 7) * 0.25
+    + softDb(vocalFormantsDb, -56, 8) * 0.45
+    + softDb(vocalEdgeDb, -64, 8) * 0.2
+    + vocalProminence * 0.3 - 0.15,
+  );
+  signal.vocal += (vocalTarget - signal.vocal) * (vocalTarget > signal.vocal ? 0.36 : 0.17);
+  const energyTarget = clamp(level * 0.35 + bass * 0.25 + mid * 0.28 + treble * 0.12);
+  signal.sectionEnergy += (energyTarget - signal.sectionEnergy)
+    * (1 - Math.exp(-deltaTime / (energyTarget > signal.sectionEnergy ? 0.8 : 2.2)));
+
+  // Positive spectral flux captures broad attacks, with an adaptive floor
+  // across quiet and loud local files.
   let rise = 0;
   let bins = 0;
   const previousSpectrum = audioState.previousSpectrum;
+  const hadSpectrum = audioState.spectrumReady;
   for (let index = 2; index < Math.min(frequency.length, 580); index += 2) {
-    if (audioState.spectrumReady) rise += Math.max(0, frequency[index] - previousSpectrum[index]);
+    if (hadSpectrum) rise += Math.max(0, frequency[index] - previousSpectrum[index]);
     previousSpectrum[index] = frequency[index];
     bins += 1;
   }
   const spectralFlux = rise / Math.max(1, bins) / 255;
   audioState.spectrumReady = true;
   audioState.spectralAverage += (spectralFlux - audioState.spectralAverage) * 0.022;
-  const onset = clamp((spectralFlux - audioState.spectralAverage * 0.66) / Math.max(0.008, audioState.spectralAverage * 2.2));
+  const onset = clamp((spectralFlux - audioState.spectralAverage * 0.66)
+    / Math.max(0.008, audioState.spectralAverage * 2.2));
   signal.onset = Math.max(signal.onset * Math.exp(-deltaTime * 10), onset);
 
   const previousBands = audioState.previousBands;
-  const kick = clamp(Math.max(0, sub - previousBands.sub) * 7.5);
-  const snare = clamp((Math.max(0, lowMid - previousBands.lowMid) * 5.4 + Math.max(0, presence - previousBands.presence) * 2.3) * 0.8);
-  const hat = clamp(Math.max(0, air - previousBands.air) * 8.0);
-  previousBands.sub = sub;
-  previousBands.lowMid = lowMid;
-  previousBands.presence = presence;
-  previousBands.air = air;
+  const kick = hadSpectrum
+    ? clamp(Math.max(0, subDb - previousBands.sub - 0.5) / 3.8
+      + Math.max(0, bassDb - previousBands.bass - 0.7) / 8)
+    : 0;
+  const snare = hadSpectrum
+    ? clamp(Math.max(0, lowMidDb - previousBands.lowMid - 0.8) / 7
+      + Math.max(0, presenceDb - previousBands.presence - 1) / 12)
+    : 0;
+  const hat = hadSpectrum ? clamp(Math.max(0, airDb - previousBands.air - 1.2) / 8) : 0;
+  const vocalRise = hadSpectrum
+    ? Math.max(0, vocalCoreDb - previousBands.vocalCore - 0.6) / 5
+      + Math.max(0, vocalFormantsDb - previousBands.vocalFormants - 0.6) / 6
+    : 0;
+  previousBands.sub = subDb;
+  previousBands.bass = bassDb;
+  previousBands.lowMid = lowMidDb;
+  previousBands.presence = presenceDb;
+  previousBands.air = airDb;
+  previousBands.vocalCore = vocalCoreDb;
+  previousBands.vocalFormants = vocalFormantsDb;
   signal.kick = Math.max(signal.kick * Math.exp(-deltaTime * 14), kick);
   signal.snare = Math.max(signal.snare * Math.exp(-deltaTime * 13), snare);
   signal.hat = Math.max(signal.hat * Math.exp(-deltaTime * 16), hat);
+  const vocalAccent = clamp(vocalRise * 0.72 + onset * 0.15) * vocalTarget;
+  signal.vocalPulse = Math.max(signal.vocalPulse * Math.exp(-deltaTime * 11), vocalAccent);
 
-  audioState.bassAverage += (bass - audioState.bassAverage) * 0.025;
-  const bassAccent = bass > Math.max(0.2, audioState.bassAverage * 1.28) && kick > 0.13;
-  const broadAccent = onset > 0.53 && (kick > 0.15 || snare > 0.34);
+  if (audioState.subAverageDb === null) audioState.subAverageDb = subDb;
+  audioState.subAverageDb += (subDb - audioState.subAverageDb)
+    * (1 - Math.exp(-deltaTime / (subDb > audioState.subAverageDb ? 3.4 : 5.5)));
+  const lowEndExcess = clamp((subDb - audioState.subAverageDb - 1.1) / 7);
+  const bassProminence = softDb(subDb - vocalFormantsDb, 43, 5);
+  const activeBass = clamp((sub - 0.2) / 0.6);
+  const bassImpact = clamp(kick * 0.88 + lowEndExcess * 0.4
+    + bassProminence * activeBass * 0.32);
+  signal.bassImpact = Math.max(signal.bassImpact * Math.exp(-deltaTime * 6.5), bassImpact);
+
+  audioState.bassAverage += (bass - audioState.bassAverage) * (1 - Math.exp(-deltaTime / 3.2));
+  const bassAccent = kick > 0.28 && bass > Math.max(0.12, audioState.bassAverage * 0.8);
+  const broadAccent = onset > 0.45 && (kick > 0.16 || snare > 0.32);
   if ((bassAccent || broadAccent) && mediaTime - audioState.lastBeatAt > 0.24) {
     const interval = mediaTime - audioState.lastBeatAt;
+    let regularity = 0;
     if (interval > 0.26 && interval < 1.25) {
-      const regularity = 1 - clamp(Math.abs(interval - audioState.beatInterval) / Math.max(0.16, audioState.beatInterval * 0.58));
+      regularity = 1 - clamp(Math.abs(interval - audioState.beatInterval)
+        / Math.max(0.16, audioState.beatInterval * 0.58));
       signal.groove += (regularity - signal.groove) * 0.22;
+      const oldInterval = audioState.beatInterval;
       audioState.beatInterval += (interval - audioState.beatInterval) * 0.2;
+      const phase = (mediaTime - audioState.phaseAnchor) / oldInterval;
+      audioState.phaseAnchor = mediaTime - phase * audioState.beatInterval;
     }
     signal.beat = 1;
     signal.pulse = 1;
     signal.beatCount += 1;
-    signal.beatPhase = 0;
+    signal.rhythmConfidence = clamp(signal.rhythmConfidence * 0.64 + 0.13 + regularity * 0.3);
+    // Lock gently to confirmed accents without snapping the visual rhythm.
+    const nearestCycle = Math.round((mediaTime - audioState.phaseAnchor) / audioState.beatInterval);
+    audioState.phaseAnchor += (mediaTime - (audioState.phaseAnchor
+      + nearestCycle * audioState.beatInterval)) * 0.22;
     audioState.lastBeatAt = mediaTime;
   } else {
     signal.beat *= Math.exp(-deltaTime * 8.4);
     signal.pulse *= Math.exp(-deltaTime * 4.4);
-    signal.beatPhase = clamp((mediaTime - audioState.lastBeatAt) / audioState.beatInterval);
     signal.groove *= Math.exp(-deltaTime * 0.12);
+    signal.rhythmConfidence *= Math.exp(-deltaTime * 0.3);
   }
+  const cycles = (mediaTime - audioState.phaseAnchor) / audioState.beatInterval;
+  signal.beatPhase = ((cycles % 1) + 1) % 1;
 
   let strongest = 1;
   for (let index = 2; index < Math.min(400, frequency.length); index += 1) {
@@ -515,8 +603,9 @@ function animate(timestamp) {
   sampleVideo(now);
   calculateMetrics();
   const frame = { time: started ? video.currentTime : now, audio: signal, visual, playing: !video.paused && !video.ended };
-  stage.update(frame);
+  const flyMotion = stage.update(frame);
   brain.update(frame);
+  debug.update(frame.audio, flyMotion);
   if (recording) {
     if (stageCanvas.width !== recordingCanvas.width || stageCanvas.height !== recordingCanvas.height) {
       stopRecording();
@@ -621,6 +710,7 @@ window.addEventListener('beforeunload', () => {
   if (recording) stopRecording();
   stage.dispose();
   brain.dispose();
+  debug.dispose();
 });
 const observer = new ResizeObserver(() => { stage.resize(); brain.resize(); });
 observer.observe(stageSection);

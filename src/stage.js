@@ -413,16 +413,47 @@ export function createStage({ canvas, video }) {
   }
   resize();
 
+  // Keep a musical phase running on the media clock even through quiet verses.
+  // Detected hits gently correct its timing without becoming the only clock.
   let danceEnergy = 0;
-  let detectedBeatCount = 0;
+  let bassDrive = 0;
+  let verseDrive = 0;
+  let dancePhase = 0;
   let detectedBeatAt = -1;
   let beatInterval = 0.53;
   let lastBeatValue = 0;
   let lastDanceTime = 0;
   let lastWallTime = performance.now() * 0.001;
+  const gestureNames = ['SIDE SLIDE', 'SHOULDER ROLL', 'SWAG WALK', 'HEAD TALK', 'CROSS STEP', 'LOW GROOVE', 'WING SHOW', 'DOUBLE TIME'];
+  const motionDiagnostics = {
+    mode: 'IDLE', gesture: gestureNames[0], energy: 0, bassShake: 0,
+    hop: 0, swagger: 0, sideStep: 0, shoulderRoll: 0,
+    headNod: 0, legStep: 0, wingFlare: 0, antenna: 0,
+  };
+  const smoothstep = (a, b, value) => {
+    const x = clamp((value - a) / (b - a));
+    return x * x * (3 - 2 * x);
+  };
+  const mix = (a, b, amount) => a + (b - a) * amount;
+  // Each four-beat phrase chooses a different silhouette. Blending at the
+  // boundary avoids abrupt jumps while keeping recognizable choreography.
+  function gesturePose(index, phase) {
+    const s = Math.sin(phase), c = Math.cos(phase);
+    const half = Math.sin(phase * 0.5);
+    switch (index % gestureNames.length) {
+      case 0: return [s, half * 0.65, s * 0.45, c * 0.2, 0.08, 0.72, 0.12];
+      case 1: return [s * 0.38, c * 0.38, Math.sin(phase * 1.5) * 1.0, s * 0.32, 0.16, 0.5, 0.28];
+      case 2: return [s * 0.76, c * 0.72, s * 0.64, -s * 0.55, Math.max(0, -s) * 0.26, 1, 0.2];
+      case 3: return [s * 0.4, c * 0.28, Math.sin(phase * 2) * 0.42, Math.sin(phase * 1.5) * 0.8, 0.15, 0.58, 0.32];
+      case 4: return [Math.sin(phase * 1.5) * 0.82, Math.cos(phase * 0.5) * 0.64, Math.sin(phase * 0.5) * 0.76, c * 0.3, 0.18, 0.96, 0.23];
+      case 5: return [s * 0.48, c * 0.27, s * 0.53, c * 0.55, (1 + c) * 0.36, 0.7, 0.27];
+      case 6: return [s * 0.62, c * 0.56, s * 0.66, -c * 0.34, 0.11, 0.76, 0.84];
+      default: return [Math.sin(phase * 2) * 0.68, c * 0.4, Math.sin(phase * 2) * 0.75, s * 0.46, 0.14, 1, 0.38];
+    }
+  }
 
   function update({ time = 0, audio = {}, visual = {}, playing = false } = {}) {
-    if (disposed) return;
+    if (disposed) return motionDiagnostics;
     const t = Number.isFinite(time) ? time : 0;
     const bass = clamp(audio.bass), mid = clamp(audio.mid), treble = clamp(audio.treble);
     const level = clamp(audio.level), beat = clamp(audio.beat);
@@ -431,35 +462,55 @@ export function createStage({ canvas, video }) {
     const onset = clamp(audio.onset ?? beat), kick = clamp(audio.kick ?? beat);
     const snare = clamp(audio.snare ?? 0), hat = clamp(audio.hat ?? treble * 0.25);
     const pulse = clamp(audio.pulse ?? beat), groove = clamp(audio.groove ?? 0.4);
+    const vocal = clamp(audio.vocal ?? presence);
+    const vocalPulse = clamp(audio.vocalPulse ?? onset * presence);
+    const bassImpact = clamp(audio.bassImpact ?? kick);
+    const rhythmConfidence = clamp(audio.rhythmConfidence ?? groove);
     const luma = clamp(visual.luma), motion = clamp(visual.motion), hue = clamp(visual.hue);
     const activity = playing ? 1 : 0.28;
+    const wallTime = performance.now() * 0.001;
+    const delta = Math.min(0.05, Math.max(0, wallTime - lastWallTime));
+    lastWallTime = wallTime;
 
-    // The media clock drives steps; audio analysis provides the attack and
-    // intensity of each distinct gesture. A local beat estimate is a fallback.
-    if (t < lastDanceTime - 0.3 || t > lastDanceTime + 2) {
+    const mediaDelta = t - lastDanceTime;
+    if (mediaDelta < -0.3 || mediaDelta > 2) {
+      dancePhase = t * Math.PI * 2 / beatInterval;
       detectedBeatAt = -1;
-      detectedBeatCount = 0;
       lastBeatValue = 0;
+    } else if (playing && mediaDelta > 0) {
+      dancePhase += mediaDelta * Math.PI * 2 / beatInterval;
     }
     lastDanceTime = t;
     if (playing && beat > 0.92 && lastBeatValue <= 0.92) {
       const gap = t - detectedBeatAt;
-      if (detectedBeatAt >= 0 && gap > 0.28 && gap < 1.1) beatInterval += (gap - beatInterval) * 0.28;
+      if (detectedBeatAt >= 0 && gap > 0.28 && gap < 1.15) beatInterval += (gap - beatInterval) * 0.21;
       detectedBeatAt = t;
-      detectedBeatCount += 1;
+      const phaseError = Math.atan2(Math.sin(dancePhase), Math.cos(dancePhase));
+      dancePhase -= phaseError * (0.06 + rhythmConfidence * 0.1);
     }
     lastBeatValue = beat;
-    const beatCount = Number.isFinite(audio.beatCount) ? audio.beatCount : detectedBeatCount;
-    const fallbackPhase = detectedBeatAt >= 0 ? clamp((t - detectedBeatAt) / beatInterval) : 0;
-    const beatPhase = Number.isFinite(audio.beatPhase) ? clamp(audio.beatPhase) : fallbackPhase;
-    const rhythm = beatCount > 0 ? (beatCount + beatPhase) * Math.PI : t * Math.PI / beatInterval;
-    const side = beatCount % 2 ? 1 : -1;
-    const phraseAccent = beatCount > 0 && beatCount % 4 === 0 ? 1 : 0.35;
-    const wallTime = performance.now() * 0.001;
-    const delta = Math.min(0.05, Math.max(0, wallTime - lastWallTime));
-    lastWallTime = wallTime;
-    const danceTarget = playing ? clamp(0.25 + sub * 0.18 + lowMid * 0.22 + level * 0.2 + groove * 0.18) : 0;
-    danceEnergy += (danceTarget - danceEnergy) * (1 - Math.exp(-delta * (playing ? 6.5 : 5)));
+    const rhythm = dancePhase;
+    const step = Math.sin(rhythm), stepLift = Math.abs(step);
+    const side = Math.floor(rhythm / Math.PI) % 2 ? 1 : -1;
+    const phrasePosition = Math.max(0, rhythm / (Math.PI * 8));
+    const phraseNumber = Math.floor(phrasePosition);
+    const phraseFraction = phrasePosition - phraseNumber;
+    const phraseBlend = smoothstep(0.74, 1, phraseFraction);
+    const firstPose = gesturePose(phraseNumber, rhythm);
+    const nextPose = gesturePose(phraseNumber + 1, rhythm);
+    const pose = firstPose.map((value, index) => mix(value, nextPose[index], phraseBlend));
+    const phraseAccent = Math.floor(rhythm / (Math.PI * 2)) % 4 === 0 ? 1 : 0.35;
+
+    // A broad low-end envelope distinguishes a bass drop from a spoken verse.
+    // Vocal presence is kept alive in sparse passages rather than waiting for kicks.
+    const bassTarget = playing ? clamp(Math.max(0, sub - 0.28) * 1.1 + Math.max(0, bass - 0.3) * 0.45 + bassImpact * 0.7 + kick * 0.18 - vocal * 0.32) : 0;
+    bassDrive += (bassTarget - bassDrive) * (1 - Math.exp(-delta * (bassTarget > bassDrive ? 10 : 3.2)));
+    const verseTarget = playing ? clamp(vocal * 0.95 + vocalPulse * 0.35 + presence * 0.39 + lowMid * 0.17 - bassDrive * 0.38) : 0;
+    verseDrive += (verseTarget - verseDrive) * (1 - Math.exp(-delta * (verseTarget > verseDrive ? 7 : 3.5)));
+    const verse = verseDrive * (1 - bassDrive * 0.48);
+    const bassMode = bassDrive;
+    const danceTarget = playing ? clamp(0.36 + level * 0.29 + groove * 0.13 + Math.max(verse, bassMode) * 0.28) : 0;
+    danceEnergy += (danceTarget - danceEnergy) * (1 - Math.exp(-delta * (playing ? 7 : 5)));
     const d = danceEnergy;
 
     const lightScale = theme === 'garden' ? 0.57 : theme === 'orbit' ? 0.78 : 1;
@@ -468,59 +519,77 @@ export function createStage({ canvas, video }) {
     screenLight.intensity = 19 + luma * 34 * activity;
     screenLight.color.setHSL(0.52 + hue * 0.25, 0.68, 0.72);
 
-    // 1 sub-bass hover, 2 kick hop, 3 low-mid shuffle, 4 groove sway.
-    const step = Math.sin(rhythm);
-    const stepLift = Math.abs(step);
-    const hover = sub * (0.11 + stepLift * 0.18) + pulse * 0.06 + level * 0.045 * Math.sin(t * 3.1);
+    // Side slides, shoulder rolls, head-talk and cross steps remain active
+    // through a verse. The low end adds a harder bounce, shake and leg punch.
+    const swagger = d * (0.33 + verse * 0.72);
+    const bassShake = d * smoothstep(0.2, 0.55, bassMode);
+    const shakeX = bassShake * (Math.sin(t * 29) * 0.09 + Math.sin(t * 43 + 1.2) * 0.05);
+    const shakeY = bassShake * Math.sin(t * 33 + 0.8) * 0.055;
+    const hop = kick * 0.32 + bassImpact * 0.2 + bassShake * stepLift * 0.28;
+    const sideStep = swagger * pose[0] * 0.39 + lowMid * d * step * 0.08;
     fly.position.set(
-      -1.45 + d * (lowMid * step * 0.33 + groove * Math.sin(rhythm * 0.5) * 0.12) + side * kick * 0.09,
-      1.6 + d * (0.025 + hover) + kick * 0.27 + onset * 0.045,
-      1.35 + d * groove * Math.cos(rhythm) * 0.16,
+      -1.45 + sideStep + shakeX + side * kick * 0.055,
+      1.6 + d * (0.028 + sub * 0.08 - verse * pose[4] * 0.1) + hop + shakeY,
+      1.35 + swagger * pose[1] * 0.21 + bassMode * d * Math.cos(rhythm) * 0.065,
     );
     flyFill.intensity = 24 + level * 7 * activity;
     flyRim.intensity = 28 + treble * 10 * activity;
 
-    // 5 snare shoulder flick, 6 onset turn, 7 high-frequency shimmy.
-    fly.rotation.x = d * (lowMid * Math.sin(rhythm * 2 - 0.4) * 0.16 - sub * stepLift * 0.09) - snare * 0.15;
-    fly.rotation.y = -0.32 + d * (presence * Math.sin(t * 2.1) * 0.13 + groove * step * 0.17) + side * onset * 0.14 * phraseAccent + motion * 0.035 * activity;
-    fly.rotation.z = d * (mid * step * 0.28 + treble * Math.sin(t * 12.5) * 0.045) + side * snare * 0.17;
+    const shoulderRoll = swagger * pose[2] * 0.32 + side * snare * 0.17 + vocalPulse * verse * 0.12;
+    fly.rotation.x = swagger * (pose[4] * 0.17 + pose[1] * 0.09) - bassMode * stepLift * 0.13 - snare * 0.09;
+    fly.rotation.y = -0.32 + swagger * pose[1] * 0.28 + side * onset * 0.13 * phraseAccent + motion * 0.03 * activity + shakeX * 0.75;
+    fly.rotation.z = shoulderRoll + shakeX * 1.6 + bassMode * d * Math.sin(rhythm * 2) * 0.09;
 
-    // 8 vocal head nod and 9 attentive side glance toward a changing screen.
-    headRig.rotation.x = d * presence * Math.sin(rhythm * 2 + 0.4) * 0.3 - kick * 0.21;
-    headRig.rotation.y = d * (presence * Math.sin(t * 2.7 + 0.3) * 0.14 + motion * 0.11);
-    headRig.rotation.z = d * mid * Math.sin(rhythm + 0.6) * 0.12 + snare * side * 0.07;
+    const headNod = swagger * pose[3] * 0.31 - vocalPulse * (0.17 + verse * 0.24) - kick * 0.17;
+    headRig.rotation.x = headNod;
+    headRig.rotation.y = swagger * Math.sin(rhythm * 0.5 + 0.3) * 0.2 + verse * vocalPulse * side * 0.1 + motion * 0.05;
+    headRig.rotation.z = -shoulderRoll * 0.36 + snare * side * 0.08;
+    abdomenRig.rotation.z = swagger * pose[0] * 0.22 + bassMode * Math.sin(rhythm * 1.5) * 0.16;
+    abdomenRig.rotation.y = bassMode * d * Math.sin(t * 7.4) * 0.17;
+    abdomenRig.rotation.x = -bassMode * stepLift * 0.14 + pose[4] * verse * 0.08;
+    thorax.scale.y = 0.84 * (1 + d * level * 0.04 + bassMode * Math.abs(Math.sin(t * 16)) * 0.04);
+    abdomen.scale.y = 0.7 * (1 + d * level * 0.055 + bassMode * 0.07);
 
-    // 10 abdominal bass wag, 11 level-driven breathing.
-    abdomenRig.rotation.z = d * bass * Math.sin(rhythm - 0.5) * 0.25;
-    abdomenRig.rotation.y = d * sub * Math.sin(t * 3.7) * 0.15;
-    abdomenRig.rotation.x = -d * lowMid * stepLift * 0.09;
-    thorax.scale.y = 0.84 * (1 + d * level * (0.045 + 0.035 * Math.sin(t * 5.2)));
-    abdomen.scale.y = 0.7 * (1 + d * level * 0.055);
-
-    // 12 alternating kick punches, 13 snare steps, 14 hi-hat toe taps.
+    let legStep = 0;
     for (const leg of legs) {
       const alternate = leg.side < 0 ? 0 : Math.PI;
-      const gait = Math.max(0, Math.sin(rhythm + alternate + leg.index * 0.9));
+      const gait = Math.max(0, Math.sin(rhythm + alternate + leg.index * 0.92));
+      const doubleGait = Math.max(0, Math.sin(rhythm * 2 + alternate + leg.index * 0.6));
+      const verseStep = swagger * pose[5] * (0.42 * gait + 0.17 * doubleGait);
+      const bassPunch = bassMode * d * gait * (leg.index === 0 ? 0.32 : 0.19);
       let lift;
-      if (leg.index === 0) lift = d * lowMid * gait * 0.55 + (leg.side === side ? kick * 0.83 : kick * 0.1);
-      else if (leg.index === 1) lift = d * groove * gait * 0.37 + (leg.side !== side ? snare * 0.36 : 0);
-      else lift = d * presence * gait * 0.18 + hat * 0.25;
+      if (leg.index === 0) lift = verseStep + bassPunch + (leg.side === side ? kick * 0.78 + vocalPulse * verse * 0.28 : kick * 0.08);
+      else if (leg.index === 1) lift = verseStep * 0.71 + bassPunch + (leg.side !== side ? snare * 0.37 : 0);
+      else lift = verseStep * 0.44 + hat * 0.2 + bassPunch * 0.5;
       leg.pivot.rotation.z = leg.side * lift;
-      leg.pivot.rotation.x = -lift * (leg.index === 0 ? 0.46 : 0.3);
-      leg.pivot.rotation.y = d * groove * Math.sin(rhythm + leg.index + alternate) * 0.12;
+      leg.pivot.rotation.x = -lift * (leg.index === 0 ? 0.49 : 0.32) + pose[1] * swagger * 0.09;
+      leg.pivot.rotation.y = swagger * Math.sin(rhythm + leg.index + alternate) * 0.16;
+      legStep = Math.max(legStep, lift);
     }
 
-    // 15 wing flutter follows air/cymbals, 16 antennae twitch on sharp highs.
-    const wingFlutter = Math.sin(t * (18 + air * 8) + rhythm * 0.5);
-    const wingOpen = 0.12 + d * (0.2 + air * (0.19 + wingFlutter * 0.14)) + hat * 0.21 + onset * 0.1;
+    const wingFlutter = Math.sin(t * (19 + air * 9) + rhythm * 0.5);
+    const wingOpen = Math.min(1.2, 0.14 + d * 0.19 + swagger * pose[6] * 0.3 + bassMode * 0.32 + hat * 0.2 + onset * 0.08);
     wings[0].rotation.z = -wingOpen;
     wings[1].rotation.z = wingOpen * (0.94 + 0.06 * Math.sin(t * 5));
-    wings[0].rotation.x = d * air * Math.sin(t * 22 + 0.3) * 0.19;
-    wings[1].rotation.x = d * air * Math.sin(t * 22 + 1.2) * 0.19;
+    wings[0].rotation.x = d * (air * 0.19 + bassMode * 0.11) * Math.sin(t * 23 + 0.3);
+    wings[1].rotation.x = d * (air * 0.19 + bassMode * 0.11) * Math.sin(t * 23 + 1.2);
+    const antennaKick = air * 0.2 + onset * 0.16 + vocalPulse * 0.12;
     for (const antenna of antennae) {
-      antenna.pivot.rotation.z = antenna.side * (d * air * Math.sin(t * 19 + antenna.side) * 0.2 + hat * 0.29);
+      antenna.pivot.rotation.z = antenna.side * (d * Math.sin(t * 19 + antenna.side) * antennaKick + hat * 0.25);
       antenna.pivot.rotation.x = -d * treble * Math.sin(t * 13 + antenna.side) * 0.12 - onset * 0.13;
     }
+    motionDiagnostics.mode = !playing ? 'IDLE' : bassMode > 0.37 ? 'BASS DROP' : verse > 0.24 ? 'VERSE / SWAG' : 'GROOVE';
+    motionDiagnostics.gesture = gestureNames[phraseNumber % gestureNames.length];
+    motionDiagnostics.energy = d;
+    motionDiagnostics.bassShake = clamp(bassShake);
+    motionDiagnostics.hop = clamp(hop / 0.58);
+    motionDiagnostics.swagger = clamp(swagger);
+    motionDiagnostics.sideStep = clamp(Math.abs(sideStep) / 0.48);
+    motionDiagnostics.shoulderRoll = clamp(Math.abs(shoulderRoll) / 0.52);
+    motionDiagnostics.headNod = clamp(Math.abs(headNod) / 0.7);
+    motionDiagnostics.legStep = clamp(legStep / 1.15);
+    motionDiagnostics.wingFlare = clamp(wingOpen / 1.2);
+    motionDiagnostics.antenna = clamp(antennaKick * 2.1 + hat * 0.25);
     wingMaterial.emissiveIntensity = 0.3 + treble * 1.4 * activity;
     eyeMat.emissiveIntensity = 1.15 + level * 1.5 * activity;
     plinthLip.material.emissiveIntensity = (0.9 + bass * 1.35 * activity) * (theme === 'garden' ? 0.26 : theme === 'orbit' ? 0.7 : 1);
@@ -551,6 +620,7 @@ export function createStage({ canvas, video }) {
     dustMaterial.opacity = 0.43 + treble * 0.5 * activity;
     controls.update();
     composer.render();
+    return motionDiagnostics;
   }
 
   function dispose() {
