@@ -506,14 +506,28 @@ function drawRecordingFrame() {
   ctx.restore();
 }
 
-function preferredRecordingType() {
-  if (!window.MediaRecorder) return null;
-  return [
+function preferredRecordingTypes() {
+  if (!window.MediaRecorder) return [];
+  const types = [
+    'video/mp4;codecs="avc1.424028, mp4a.40.2"',
+    'video/mp4;codecs="avc1, mp4a.40.2"',
+    'video/mp4',
     'video/webm;codecs=vp9,opus',
     'video/webm;codecs=vp8,opus',
     'video/webm',
-    'video/mp4',
-  ].find((type) => MediaRecorder.isTypeSupported?.(type)) || '';
+  ];
+  return typeof MediaRecorder.isTypeSupported === 'function'
+    ? types.filter((type) => MediaRecorder.isTypeSupported(type))
+    : types;
+}
+
+function resetRecordButton() {
+  const preferred = preferredRecordingTypes()[0] || '';
+  const format = preferred.startsWith('video/mp4') ? 'MP4' : preferred ? 'WebM' : '';
+  const label = format ? `Записать сцену в ${format}` : 'Записать сцену';
+  $('record-label').textContent = 'Записать';
+  $('record-btn').setAttribute('aria-label', label);
+  $('record-btn').title = label;
 }
 
 async function startRecording() {
@@ -540,42 +554,67 @@ async function startRecording() {
     const audioTracks = audioState.recordingDestination.stream.getAudioTracks();
     const stream = new MediaStream([...canvasStream.getVideoTracks(), ...audioTracks]);
     const chunks = [];
-    const mimeType = preferredRecordingType();
-    const recorder = new MediaRecorder(stream, {
-      ...(mimeType ? { mimeType } : {}),
+    const recorderOptions = {
       videoBitsPerSecond: Math.min(50_000_000, Math.max(8_000_000, Math.round(recordingCanvas.width * recordingCanvas.height * recordingFps * 0.16))),
       audioBitsPerSecond: 256_000,
-    });
+    };
+    // MP4 with H.264/AAC is preferred. If a codec passes the capability
+    // check but cannot start at this canvas size, try the next recorder type.
+    let recorder;
+    for (const mimeType of [...preferredRecordingTypes(), '']) {
+      try {
+        const candidate = new MediaRecorder(stream, {
+          ...recorderOptions,
+          ...(mimeType ? { mimeType } : {}),
+        });
+        candidate.start(1000);
+        recorder = candidate;
+        break;
+      } catch (error) {
+        console.warn('Recording format unavailable:', mimeType || 'browser default', error);
+      }
+    }
+    if (!recorder) throw new Error('No working recording format');
+    const recordingFormat = recorder.mimeType.toLowerCase().includes('mp4') ? 'MP4' : 'WebM';
+    let recordingFailed = false;
     recorder.addEventListener('dataavailable', (event) => { if (event.data.size) chunks.push(event.data); });
-    recorder.addEventListener('error', () => showToast('Во время записи произошла ошибка.'));
+    recorder.addEventListener('error', (event) => {
+      recordingFailed = true;
+      console.error('Recording failed:', event.error || event);
+      showToast(`Запись ${recordingFormat} прервана браузером. Попробуйте ещё раз.`);
+    });
     recorder.addEventListener('stop', () => {
       if (recording?.recorder === recorder) {
         recording = null;
         $('record-btn').classList.remove('recording');
-        $('record-label').textContent = 'Записать';
-        $('record-btn').setAttribute('aria-label', 'Записать сцену');
-        $('record-btn').title = 'Записать сцену';
+        resetRecordButton();
         updatePlaybackState();
       }
       canvasStream.getTracks().forEach((track) => track.stop());
+      if (recordingFailed) return;
       if (!chunks.length) return showToast('Запись не содержит кадров. Попробуйте ещё раз.');
-      const blob = new Blob(chunks, { type: recorder.mimeType || mimeType || 'video/webm' });
+      const actualType = chunks[0]?.type || recorder.mimeType || 'application/octet-stream';
+      const lowerType = actualType.toLowerCase();
+      const extension = lowerType.includes('mp4') ? 'mp4'
+        : lowerType.includes('webm') ? 'webm'
+          : lowerType.includes('matroska') ? 'mkv' : 'bin';
+      const blob = new Blob(chunks, { type: actualType });
       const url = URL.createObjectURL(blob);
       lastRecordingUrl = url;
       const link = $('download-link');
       link.href = url;
-      link.download = `nocturna-${theme}-${new Date().toISOString().replace(/[:.]/g, '-')}.${blob.type.includes('mp4') ? 'mp4' : 'webm'}`;
+      link.download = `nocturna-${theme}-${new Date().toISOString().replace(/[:.]/g, '-')}.${extension}`;
+      link.textContent = `↓ Скачать ${extension.toUpperCase()}`;
       link.hidden = false;
       link.click();
-      showToast('Запись готова. Если скачивание не началось, нажмите «Скачать запись».');
+      showToast(`Запись ${extension.toUpperCase()} готова. Если скачивание не началось, нажмите «Скачать ${extension.toUpperCase()}».`);
     }, { once: true });
-    recorder.start(1000);
     recording = { recorder, stream, startedAt: performance.now() };
     $('record-btn').classList.add('recording');
     $('record-btn').setAttribute('aria-label', 'Остановить запись');
     $('record-btn').title = 'Остановить запись';
     updatePlaybackState();
-    showToast('Идёт запись сцены со звуком и нейрокартой.');
+    showToast(`Идёт запись ${recordingFormat} со звуком и нейрокартой.`);
   } catch (error) {
     console.error(error);
     canvasStream?.getTracks().forEach((track) => track.stop());
@@ -591,9 +630,7 @@ function stopRecording() {
   if (recording.recorder.state !== 'inactive') recording.recorder.stop();
   recording = null;
   $('record-btn').classList.remove('recording');
-  $('record-label').textContent = 'Записать';
-  $('record-btn').setAttribute('aria-label', 'Записать сцену');
-  $('record-btn').title = 'Записать сцену';
+  resetRecordButton();
   updatePlaybackState();
 }
 
@@ -717,6 +754,7 @@ observer.observe(stageSection);
 observer.observe(document.querySelector('.brain-frame'));
 stage.resize();
 brain.resize();
+resetRecordButton();
 updatePlaybackState();
 updateTimeUi();
 requestAnimationFrame(animate);
