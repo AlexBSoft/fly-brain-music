@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#050710" />
+    <meta name="description" content="NOCTURNA — музыкальная сцена глазами дрозофилы. Загрузите клип и наблюдайте, как свет, звук и нейрокарта оживают в одном ритме." />
+    <title>NOCTURNA — мир глазами мухи</title>
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <main class="workspace">
+        <section class="stage-section" aria-label="Интерактивная сцена">
+          <canvas id="stage-canvas" aria-label="Трёхмерная сцена: муха смотрит музыкальный клип в ночном клубе"></canvas>
+          <div class="stage-vignette" aria-hidden="true"></div>
+
+          <header class="topbar">
+            <div class="topbar-actions">
+              <span class="system-indicator"><i aria-hidden="true"></i><span id="system-status">СЦЕНА ГОТОВА</span></span>
+              <button id="fullscreen-btn" class="icon-button fullscreen-button" type="button" title="На весь экран" aria-label="На весь экран">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" /></svg>
+              </button>
+            </div>
+          </header>
+
+          <div class="neural-hologram" aria-label="Голограмма нейронной активности">
+            <div class="hologram-heading">
+              <span><i class="hologram-pip" aria-hidden="true"></i> НЕЙРОКАРТА</span>
+              <span id="live-badge" class="live-badge">● STANDBY</span>
+            </div>
+            <div class="brain-frame">
+              <div class="brain-grid" aria-hidden="true"></div>
+              <canvas id="brain-canvas" aria-label="Анимированная карта нейронной активности"></canvas>
+              <span class="brain-corner corner-tl" aria-hidden="true"></span>
+              <span class="brain-corner corner-tr" aria-hidden="true"></span>
+              <span class="brain-corner corner-bl" aria-hidden="true"></span>
+              <span class="brain-corner corner-br" aria-hidden="true"></span>
+            </div>
+            <div class="hologram-foot"><span>VISUAL · AUDIO · RESPONSE</span><span>01 / LIVE</span></div>
+          </div>
+
+          <div id="start-overlay" class="start-overlay">
+            <button id="start-btn" class="start-button" type="button" aria-label="Запустить сцену">
+              <span class="start-button-ring" aria-hidden="true"></span><span class="play-triangle" aria-hidden="true"></span>
+            </button>
+            <span>ПОГРУЗИТЬСЯ</span>
+          </div>
+
+          <div id="drop-overlay" class="drop-overlay" hidden>
+            <span class="drop-symbol" aria-hidden="true">↳</span>
+            <strong>Отпустите клип</strong>
+            <small>Видео или аудио откроется прямо в браузере</small>
+          </div>
+
+          <div class="control-dock" aria-label="Управление просмотром">
+            <button id="play-btn" class="transport-play" type="button" aria-label="Воспроизвести">
+              <svg class="icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7z" /></svg>
+              <svg class="icon-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14" /></svg>
+            </button>
+            <div class="transport">
+              <div class="track-line">
+                <div class="track-meta"><strong id="track-title">Voskresenskii — Стиралка</strong><small id="track-subtitle">ДЕМО-КЛИП · ЛОКАЛЬНОЕ ВОСПРОИЗВЕДЕНИЕ</small></div>
+                <div class="time-readout"><span id="current-time">00:00</span><span class="time-slash">/</span><span id="duration">00:00</span></div>
+              </div>
+              <input id="seek" class="seek-bar" type="range" min="0" max="1000" value="0" aria-label="Позиция клипа" />
+              <a id="download-link" class="download-link" hidden>↓ Скачать запись</a>
+            </div>
+            <span class="dock-divider" aria-hidden="true"></span>
+            <div class="scene-picker">
+              <button id="scene-toggle" class="dock-button scene-toggle" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="scene-menu" aria-label="Выбрать сцену" title="Выбрать сцену">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7.5 12 3l9 4.5L12 12 3 7.5Zm0 5L12 17l9-4.5M3 17.5 12 22l9-4.5" /></svg>
+                <span id="scene-current">Клуб</span><span class="chevron" aria-hidden="true">⌃</span>
+              </button>
+              <div id="scene-menu" class="scene-menu" hidden>
+                <span class="menu-kicker">АТМОСФЕРА</span>
+                <button class="scene-option active" data-theme="club" type="button"><span class="scene-number">01</span> Ночной клуб</button>
+                <button class="scene-option" data-theme="garden" type="button"><span class="scene-number">02</span> Оранжерея</button>
+                <button class="scene-option" data-theme="orbit" type="button"><span class="scene-number">03</span> Орбита</button>
+              </div>
+            </div>
+            <div class="volume-control">
+              <button id="mute-btn" class="dock-button icon-button" type="button" title="Отключить звук" aria-label="Отключить звук"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4zM17 9a4 4 0 0 1 0 6M19 6a8 8 0 0 1 0 12" /></svg></button>
+              <input id="volume" type="range" min="0" max="100" value="85" aria-label="Громкость" />
+            </div>
+            <button id="upload-btn" class="dock-button" type="button" title="Загрузить клип" aria-label="Загрузить клип">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7 9m5-5 5 5M4 17v3h16v-3" /></svg>
+            </button>
+            <button id="record-btn" class="dock-button record-button" type="button" title="Записать сцену" aria-label="Записать сцену"><span class="record-dot" aria-hidden="true"></span><span id="record-label">Записать</span></button>
+            <input id="file-input" type="file" accept="video/*,audio/*" hidden />
+          </div>
+        </section>
+      </main>
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
+      <video id="source-video" preload="metadata" playsinline loop crossorigin="anonymous"></video>
+      <canvas id="recording-canvas" width="1280" height="720" hidden></canvas>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
