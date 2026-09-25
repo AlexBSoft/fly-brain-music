@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#070a12" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Пульт управления · Dr. Stun</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  </head>
+  <body>
+    <main id="app" class="admin-app">
+      <section id="login-screen" class="login-screen" aria-labelledby="login-title">
+        <div class="login-ambient" aria-hidden="true"><span></span><span></span><span></span></div>
+        <div class="login-panel">
+          <div class="mark" aria-hidden="true"><i></i></div>
+          <p class="eyebrow">DR. STUN / CONTROL ROOM</p>
+          <h1 id="login-title">Пульт управления</h1>
+          <p class="login-description">Музыка для мухи начинается здесь.</p>
+          <form id="login-form" autocomplete="on">
+            <label for="password">Пароль</label>
+            <div class="password-row">
+              <input id="password" name="password" type="password" autocomplete="current-password" required autofocus placeholder="Введите пароль" />
+              <button id="login-submit" class="button button-primary" type="submit">Войти <span aria-hidden="true">↗</span></button>
+            </div>
+            <p id="login-error" class="form-error" role="alert" hidden></p>
+          </form>
+          <a class="back-link" href="/">← Вернуться к сцене</a>
+        </div>
+      </section>
+
+      <div id="dashboard" class="dashboard" hidden>
+        <header class="dashboard-header">
+          <div class="brand-line"><span class="brand-glyph" aria-hidden="true">✦</span><span>DR. STUN</span><span class="brand-divider"></span><span class="brand-subtitle">CONTROL ROOM</span></div>
+          <div class="header-actions"><a href="/" target="_blank" rel="noopener noreferrer">Открыть сцену <span aria-hidden="true">↗</span></a><button id="logout-button" type="button">Выйти</button></div>
+        </header>
+
+        <div class="dashboard-main">
+          <div class="page-heading"><div><p class="eyebrow"><span class="live-dot"></span> МЕДИАТЕКА / LIVE</p><h1>Музыка для полёта.</h1><p class="lead">Добавляйте треки, собирайте плейлисты по артистам и делитесь ссылкой.</p></div><div class="heading-art" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div></div>
+
+          <section class="overview" aria-label="Обзор медиатеки">
+            <div class="metric"><span>ТРЕКОВ В ЭФИРЕ</span><strong id="track-count">—</strong><small>глобальный плейлист</small></div>
+            <div class="metric"><span>АРТИСТОВ</span><strong id="artist-count">—</strong><small>отдельные подборки</small></div>
+            <div class="metric metric-link"><span>ОБЩИЙ ПЛЕЙЛИСТ</span><strong>Все треки <span aria-hidden="true">↗</span></strong><button type="button" id="copy-all-link" class="text-button">Скопировать ссылку</button></div>
+          </section>
+
+          <div class="columns">
+            <section class="panel import-panel" aria-labelledby="import-title">
+              <div class="section-heading"><div><p class="eyebrow">01 / ИМПОРТ</p><h2 id="import-title">Добавить музыку</h2></div><span class="section-icon" aria-hidden="true">＋</span></div>
+              <div class="form-tabs" role="tablist" aria-label="Источник музыки"><button id="tab-file" type="button" role="tab" aria-selected="true" aria-controls="file-form">Файл MP3 / MP4</button><button id="tab-youtube" type="button" role="tab" aria-selected="false" aria-controls="youtube-form">YouTube ссылка</button></div>
+
+              <form id="file-form" class="import-form" aria-label="Загрузить файл">
+                <label class="file-drop" id="file-drop" for="media-file"><input id="media-file" name="file" type="file" accept=".mp3,.mp4,audio/mpeg,video/mp4" required /><span class="upload-symbol" aria-hidden="true">↑</span><strong id="file-label">Выберите MP3 или MP4</strong><small id="file-help">До 150 МБ и 20 минут</small></label>
+                <div class="form-grid"><div class="field"><label for="upload-title">Название <span class="optional">необязательно</span></label><input id="upload-title" name="title" type="text" maxlength="160" placeholder="Из имени файла, если пусто" /></div><div class="field"><label for="upload-artist">Артист</label><input id="upload-artist" name="artist" type="text" maxlength="100" list="artist-suggestions" placeholder="Например, Voskresenskii" required /></div></div>
+                <button id="upload-submit" class="button button-primary button-wide" type="submit">Загрузить файл <span aria-hidden="true">↗</span></button>
+              </form>
+
+              <form id="youtube-form" class="import-form" aria-label="Добавить ссылку YouTube" hidden>
+                <div class="field"><label for="youtube-url">Ссылка на видео</label><input id="youtube-url" name="url" type="url" inputmode="url" required placeholder="https://www.youtube.com/watch?v=…" /></div>
+                <div class="form-grid"><div class="field"><label for="youtube-title">Название <span class="optional">необязательно</span></label><input id="youtube-title" name="title" type="text" maxlength="160" placeholder="Определим автоматически" /></div><div class="field"><label for="youtube-artist">Артист <span class="optional">необязательно</span></label><input id="youtube-artist" name="artist" type="text" maxlength="100" list="artist-suggestions" placeholder="Определим автоматически" /></div></div>
+                <button id="youtube-submit" class="button button-primary button-wide" type="submit">Добавить по ссылке <span aria-hidden="true">↗</span></button>
+                <p class="hint">Видео до 20 минут. Импорт может занять несколько минут — не закрывайте страницу.</p>
+              </form>
+              <datalist id="artist-suggestions"></datalist>
+              <div id="import-status" class="import-status" role="status" aria-live="polite" hidden><div class="status-line"><span id="import-status-text">Загрузка…</span><strong id="import-progress-text"></strong></div><div class="progress-track"><div id="import-progress-bar"></div></div></div>
+            </section>
+
+            <section class="panel artists-panel" aria-labelledby="artists-title">
+              <div class="section-heading"><div><p class="eyebrow">02 / АРТИСТЫ</p><h2 id="artists-title">Плейлисты</h2></div><span class="section-icon" aria-hidden="true">♬</span></div>
+              <p class="panel-description">Каждый артист получает отдельную ссылку. Муха слушает только его треки.</p>
+              <form id="artist-form" class="artist-create"><label class="sr-only" for="artist-name">Имя артиста</label><input id="artist-name" name="name" type="text" maxlength="100" placeholder="Имя нового артиста" required /><button id="artist-submit" class="button button-outline" type="submit">Создать</button></form>
+              <div id="playlist-list" class="playlist-list" aria-live="polite"></div>
+            </section>
+          </div>
+
+          <section class="panel library-panel" aria-labelledby="library-title">
+            <div class="library-heading"><div><p class="eyebrow">03 / МЕДИАТЕКА</p><h2 id="library-title">Все треки</h2></div><div class="library-tools"><label class="search-field"><span aria-hidden="true">⌕</span><span class="sr-only">Поиск по трекам</span><input id="track-search" type="search" placeholder="Найти трек или артиста" autocomplete="off" /></label><button id="refresh-button" type="button" class="button button-quiet" aria-label="Обновить список" title="Обновить список">↻</button></div></div>
+            <div class="table-wrap"><table><thead><tr><th>ТРЕК</th><th>АРТИСТ</th><th>ДЛИТЕЛЬНОСТЬ</th><th class="action-heading">ДЕЙСТВИЯ</th></tr></thead><tbody id="tracks-body"></tbody></table></div>
+            <p id="tracks-empty" class="empty-state" hidden>Здесь пока нет треков. Добавьте первый трек выше.</p>
+          </section>
+
+          <footer class="dashboard-footer"><span>DR. STUN · CONTROL ROOM</span><span>Музыка задаёт настроение.</span></footer>
+        </div>
+      </div>
+    </main>
+
+    <dialog id="edit-dialog" class="edit-dialog" aria-labelledby="edit-title"><form id="edit-form" method="dialog"><p class="eyebrow">РЕДАКТИРОВАНИЕ</p><h2 id="edit-title">Править трек</h2><input id="edit-track-id" type="hidden" /><div class="field"><label for="edit-track-title">Название</label><input id="edit-track-title" type="text" maxlength="160" required /></div><div class="field"><label for="edit-track-artist">Артист</label><input id="edit-track-artist" type="text" maxlength="100" list="edit-artist-suggestions" required /></div><datalist id="edit-artist-suggestions"></datalist><div class="dialog-actions"><button id="edit-cancel" class="button button-quiet" type="button">Отмена</button><button id="edit-save" class="button button-primary" type="submit">Сохранить</button></div></form></dialog>
+    <dialog id="delete-dialog" class="edit-dialog delete-dialog" aria-labelledby="delete-title"><form id="delete-form" method="dialog"><p class="eyebrow">УДАЛЕНИЕ</p><h2 id="delete-title">Удалить трек?</h2><p id="delete-description">Трек исчезнет из всех плейлистов.</p><input id="delete-track-id" type="hidden" /><div class="dialog-actions"><button id="delete-cancel" class="button button-quiet" type="button">Отмена</button><button id="delete-confirm" class="button button-danger" type="submit">Удалить</button></div></form></dialog>
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <script type="module" src="/src/admin.js"></script>
+  </body>
+</html>

@@ -7,7 +7,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm,sharing=locked npm ci --no-audit --no-fund
 
-COPY index.html vite.config.js ./
+COPY index.html admin.html vite.config.js ./
 COPY src ./src
 COPY public ./public
 ARG VITE_SITE_URL

@@ -2,12 +2,16 @@ import './style.css';
 import { createStage } from './stage.js';
 import { createBrainViz } from './brain.js';
 import { createDebugPanel } from './debug.js';
+import { createRadio, libraryHasTracks, playlistSlugFromPath } from './radio.js';
 
 const $ = (id) => document.getElementById(id);
 const video = $('source-video');
-video.src = `${import.meta.env.BASE_URL}media/demo.mp4`;
+const playlistSlug = playlistSlugFromPath();
+if (!playlistSlug) {
+  video.src = `${import.meta.env.BASE_URL}media/demo.mp4`;
+  video.load();
+}
 video.poster = `${import.meta.env.BASE_URL}media/poster.jpg`;
-video.load();
 const stageCanvas = $('stage-canvas');
 const brainCanvas = $('brain-canvas');
 const recordingCanvas = $('recording-canvas');
@@ -84,6 +88,10 @@ const signal = {
 const visual = { luma: 0.34, motion: 0.08, hue: 0.55 };
 let metrics = { vision: 0, hearing: 0, motion: 0, focus: 0 };
 let started = false;
+let radio = null;
+let radioReady = null;
+let radioLoadError = null;
+let loadingPlayback = false;
 let objectUrl = null;
 let audioOnly = false;
 let recording = null;
@@ -111,6 +119,50 @@ function showToast(message) {
   toast.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => toast.classList.remove('show'), 4200);
+}
+
+function setStartLoading(loading, label = 'ПОГРУЗИТЬСЯ') {
+  loadingPlayback = loading;
+  $('start-overlay').classList.toggle('loading', loading);
+  $('start-btn').disabled = loading;
+  $('start-btn').setAttribute('aria-busy', String(loading));
+  $('start-status').textContent = label;
+}
+
+function renderTaste(taste) {
+  const panel = $('taste-panel');
+  panel.hidden = false;
+  const moodLabels = {
+    'На своей волне': 'НА ВОЛНЕ',
+    'Ловит ритм': 'В РИТМЕ',
+    'Ищет другое звучание': 'ИЩЕТ ЗВУК',
+    'Прислушивается': 'СЛУШАЕТ',
+  };
+  $('taste-mood').textContent = moodLabels[taste.label] || taste.label || 'СЛУШАЕТ';
+  $('taste-mood').title = taste.label || '';
+  const lists = [
+    [$('taste-favorites'), (taste.favorites || []).slice(0, 2), '♥'],
+    [$('taste-dislikes'), (taste.dislikes || []).slice(0, 1), '−'],
+  ];
+  for (const [container, tracks, icon] of lists) {
+    container.replaceChildren();
+    for (const track of tracks) {
+      const row = document.createElement('div');
+      const symbol = document.createElement('span');
+      const name = document.createElement('span');
+      symbol.textContent = icon;
+      name.textContent = (track.artist ? track.artist + ' — ' : '') + track.title;
+      name.title = name.textContent;
+      row.append(symbol, name);
+      container.append(row);
+    }
+  }
+  if (!panel.querySelector('.taste-list > div')) {
+    const empty = document.createElement('div');
+    empty.className = 'taste-empty';
+    empty.textContent = 'Вкус только формируется';
+    $('taste-favorites').append(empty);
+  }
 }
 
 function formatTime(seconds) {
@@ -151,14 +203,24 @@ async function ensureAudio() {
 }
 
 async function play() {
+  if (loadingPlayback) return;
+  setStartLoading(true, radio ? 'ПОДКЛЮЧАЕМ МУЗЫКУ' : 'ЗАГРУЖАЕМ КЛИП');
   try {
     await ensureAudio();
+    if (radio && !radio.current) {
+      if (radioLoadError || !radioReady) radioReady = initializeRadio();
+      await radioReady;
+      if (!radio.current) throw radioLoadError || new Error('Плейлист пока недоступен.');
+    }
     await video.play();
     started = true;
     $('start-overlay').classList.add('hidden');
   } catch (error) {
     console.error(error);
-    showToast('Не удалось воспроизвести файл. Выберите другое видео или аудио.');
+    showToast(radio ? error.message || 'Не удалось запустить плейлист.' : 'Не удалось воспроизвести файл. Выберите другое видео или аудио.');
+  } finally {
+    setStartLoading(false);
+    updatePlaybackState();
   }
 }
 
@@ -474,6 +536,7 @@ function setTheme(nextTheme) {
 }
 
 function loadFile(file) {
+  if (radio) return;
   const isAudio = Boolean(file && (file.type.startsWith('audio/')
     || /\.(?:mp3|m4a|aac|wav|ogg|opus|flac)$/i.test(file.name)));
   const isVideo = Boolean(file && (file.type.startsWith('video/')
@@ -502,6 +565,49 @@ function loadFile(file) {
   $('seek').style.setProperty('--seek-fill', '0%');
   updatePlaybackState();
   showToast('Файл загружен. Нажмите воспроизведение.');
+}
+
+async function prepareRadioTrack(track, autoplay) {
+  video.pause();
+  resetAudioAnalysis();
+  video.loop = false;
+  video.src = track.streamUrl;
+  audioOnly = true;
+  stage.setAudioOnly(true);
+  video.load();
+  previousPixels = null;
+  lastVisualSample = 0;
+  $('track-title').textContent = (track.artist ? track.artist + ' — ' : '') + track.title;
+  $('track-subtitle').textContent = (radio?.playlist?.name || 'Радио') + ' · ВЫБОР МУХИ';
+  $('current-time').textContent = '00:00';
+  $('duration').textContent = formatTime(track.duration);
+  $('seek').value = 0;
+  $('seek').style.setProperty('--seek-fill', '0%');
+  if (autoplay) {
+    try {
+      await ensureAudio();
+      await video.play();
+    } catch (error) {
+      console.warn('Automatic playback was blocked:', error);
+      showToast('Следующий трек готов. Нажмите воспроизведение.');
+    }
+  }
+  updatePlaybackState();
+}
+
+async function initializeRadio() {
+  setStartLoading(true, 'СОБИРАЕМ ПЛЕЙЛИСТ');
+  try {
+    await radio.initialize();
+    radioLoadError = null;
+  } catch (error) {
+    radioLoadError = error;
+    console.error(error);
+    showToast(error.message || 'Не удалось открыть плейлист.');
+  } finally {
+    setStartLoading(false, radioLoadError ? 'ПОВТОРИТЬ' : 'ПОГРУЗИТЬСЯ');
+    updatePlaybackState();
+  }
 }
 
 function drawRecordingFrame() {
@@ -702,6 +808,7 @@ function animate(timestamp) {
   sampleAudio(now);
   sampleVideo(now);
   calculateMetrics();
+  radio?.tick(timestamp, signal, visual);
   const frame = {
     time: started ? video.currentTime : now,
     audio: signal,
@@ -734,7 +841,7 @@ function animate(timestamp) {
 
 $('start-btn').addEventListener('click', play);
 $('play-btn').addEventListener('click', togglePlayback);
-$('upload-btn').addEventListener('click', () => $('file-input').click());
+$('upload-btn').addEventListener('click', () => radio ? radio.next('manual-skip') : $('file-input').click());
 $('file-input').addEventListener('change', (event) => {
   loadFile(event.target.files?.[0]);
   event.target.value = '';
@@ -801,7 +908,7 @@ document.addEventListener('click', (event) => {
 });
 video.addEventListener('play', updatePlaybackState);
 video.addEventListener('pause', updatePlaybackState);
-video.addEventListener('ended', updatePlaybackState);
+video.addEventListener('ended', () => { updatePlaybackState(); radio?.next('ended'); });
 video.addEventListener('loadedmetadata', updateTimeUi);
 video.addEventListener('durationchange', updateTimeUi);
 video.addEventListener('seeking', () => {
@@ -809,14 +916,14 @@ video.addEventListener('seeking', () => {
   visual.motion = 0;
   resetAudioAnalysis();
 });
-video.addEventListener('error', () => showToast('Этот файл не удалось открыть. Попробуйте MP4, WebM или MP3.'));
+video.addEventListener('error', () => showToast(radio ? 'Не удалось загрузить трек. Выберите следующий.' : 'Этот файл не удалось открыть. Попробуйте MP4, WebM или MP3.'));
 const stageSection = document.querySelector('.stage-section');
 let dragDepth = 0;
 document.addEventListener('dragenter', (event) => { if (event.dataTransfer?.types.includes('Files')) event.preventDefault(); });
-stageSection.addEventListener('dragenter', (event) => { event.preventDefault(); dragDepth += 1; $('drop-overlay').hidden = false; });
+stageSection.addEventListener('dragenter', (event) => { event.preventDefault(); if (radio) return; dragDepth += 1; $('drop-overlay').hidden = false; });
 stageSection.addEventListener('dragover', (event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; });
 stageSection.addEventListener('dragleave', (event) => { event.preventDefault(); dragDepth -= 1; if (dragDepth <= 0) { dragDepth = 0; $('drop-overlay').hidden = true; } });
-stageSection.addEventListener('drop', (event) => { event.preventDefault(); dragDepth = 0; $('drop-overlay').hidden = true; loadFile(event.dataTransfer.files?.[0]); });
+stageSection.addEventListener('drop', (event) => { event.preventDefault(); dragDepth = 0; $('drop-overlay').hidden = true; if (!radio) loadFile(event.dataTransfer.files?.[0]); });
 document.addEventListener('dragover', (event) => event.preventDefault());
 document.addEventListener('drop', (event) => event.preventDefault());
 document.addEventListener('keydown', (event) => {
@@ -840,6 +947,31 @@ window.addEventListener('beforeunload', () => {
 const observer = new ResizeObserver(() => { stage.resize(); brain.resize(); });
 observer.observe(stageSection);
 observer.observe(document.querySelector('.brain-frame'));
+if (playlistSlug) {
+  radio = createRadio({
+    slug: playlistSlug,
+    video,
+    onPlaylist(playlist) {
+      document.title = playlist.name + ' — Dr. Stun';
+      if (playlistSlug !== 'all') {
+        const link = $('radio-entry');
+        link.textContent = '◖ ВСЕ ТРЕКИ';
+        link.hidden = false;
+      }
+    },
+    onTrack: prepareRadioTrack,
+    onTaste: renderTaste,
+    onError(error) { showToast(error.message || 'Не удалось выбрать следующий трек.'); },
+  });
+  const nextButton = $('upload-btn');
+  nextButton.title = 'Следующий трек';
+  nextButton.setAttribute('aria-label', 'Следующий трек');
+  nextButton.querySelector('path').setAttribute('d', 'M5 5v14l11-7L5 5Zm14 0v14');
+  document.body.classList.add('radio-mode');
+  radioReady = initializeRadio();
+} else {
+  libraryHasTracks().then((available) => { $('radio-entry').hidden = !available; }).catch(() => {});
+}
 stage.resize();
 brain.resize();
 resetRecordButton();

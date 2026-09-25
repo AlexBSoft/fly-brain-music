@@ -1,4 +1,5 @@
 import { defineConfig, loadEnv } from 'vite';
+import { resolve } from 'node:path';
 
 export default defineConfig(({ mode }) => {
   const publicUrl = loadEnv(mode, process.cwd(), 'VITE_').VITE_SITE_URL?.trim();
@@ -15,16 +16,27 @@ export default defineConfig(({ mode }) => {
   }
 
   return {
-    base: './',
+    base: '/',
+    server: {
+      proxy: { '/api': 'http://127.0.0.1:8000' },
+    },
+    build: {
+      rollupOptions: {
+        input: {
+          app: resolve(process.cwd(), 'index.html'),
+          admin: resolve(process.cwd(), 'admin.html'),
+        },
+      },
+    },
     plugins: [{
       name: 'social-preview-urls',
       transformIndexHtml(html) {
         const imageUrl = siteUrl
           ? new URL('social-preview.png', siteUrl).href
-          : './social-preview.png';
+          : '/social-preview.png';
 
         return html
-          .replaceAll('./social-preview.png', imageUrl)
+          .replaceAll('/social-preview.png', imageUrl)
           .replace(
             '<!-- SITE_CANONICAL -->',
             siteUrl
