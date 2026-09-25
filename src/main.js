@@ -391,46 +391,31 @@ function loadFile(file) {
   showToast('Клип загружен. Нажмите воспроизведение.');
 }
 
-function drawText(text, x, y, font, color, maxWidth) {
-  recordingContext.font = font;
-  recordingContext.fillStyle = color;
-  recordingContext.fillText(text, x, y, maxWidth);
-}
-
-function drawImageCover(image, x, y, width, height) {
-  const sourceWidth = image.width || image.videoWidth;
-  const sourceHeight = image.height || image.videoHeight;
-  if (!sourceWidth || !sourceHeight) return;
-  const scale = Math.max(width / sourceWidth, height / sourceHeight);
-  const cropWidth = width / scale;
-  const cropHeight = height / scale;
-  recordingContext.drawImage(image, (sourceWidth - cropWidth) / 2, (sourceHeight - cropHeight) / 2, cropWidth, cropHeight, x, y, width, height);
-}
-
 function drawRecordingFrame() {
   const ctx = recordingContext;
-  ctx.fillStyle = '#080b17';
-  ctx.fillRect(0, 0, 1280, 720);
-  drawImageCover(stageCanvas, 0, 0, 1280, 720);
-  const gradient = ctx.createLinearGradient(0, 0, 0, 720);
-  gradient.addColorStop(0, '#050815b3');
-  gradient.addColorStop(0.2, '#05081500');
-  gradient.addColorStop(0.72, '#05081500');
-  gradient.addColorStop(1, '#050815d9');
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, 1280, 720);
-  drawText('NOCTURNA', 36, 55, '800 23px Arial', '#f4f5ff');
-  drawText('FLY STUDIO  /  LIVE VISUAL', 37, 77, '700 9px Arial', '#83eae2');
+  const width = recordingCanvas.width;
+  const height = recordingCanvas.height;
+  ctx.drawImage(stageCanvas, 0, 0, width, height);
+
+  // Place only the animated neural cloud at its live screen coordinates.
+  // UI labels, transport controls and decorative recording titles stay out.
+  const stageRect = stageCanvas.getBoundingClientRect();
+  const brainRect = brainCanvas.getBoundingClientRect();
+  if (!stageRect.width || !stageRect.height || !brainRect.width || !brainRect.height) return;
+  const scaleX = width / stageRect.width;
+  const scaleY = height / stageRect.height;
   ctx.save();
-  ctx.globalAlpha = 0.87;
-  ctx.shadowBlur = 26;
-  ctx.shadowColor = '#66eae5';
-  ctx.drawImage(brainCanvas, 984, 48, 268, 215);
+  ctx.globalAlpha = 0.94;
+  ctx.shadowColor = '#7beee8';
+  ctx.shadowBlur = 12 * Math.max(scaleX, scaleY);
+  ctx.drawImage(
+    brainCanvas,
+    (brainRect.left - stageRect.left) * scaleX,
+    (brainRect.top - stageRect.top) * scaleY,
+    brainRect.width * scaleX,
+    brainRect.height * scaleY,
+  );
   ctx.restore();
-  drawText('NEURAL ACTIVITY / LIVE', 1000, 48, '700 10px Arial', '#a5f6ef');
-  drawText(themes[theme].name, 36, 643, 'italic 40px Georgia', '#ffe4f2');
-  drawText($('track-title').textContent, 38, 679, '600 17px Arial', '#f1eef8', 900);
-  drawText(formatTime(video.currentTime), 1180, 679, '700 16px Arial', '#b5eae9');
 }
 
 function preferredRecordingType() {
@@ -459,16 +444,19 @@ async function startRecording() {
     lastRecordingUrl = null;
     $('download-link').hidden = true;
     await ensureAudio();
+    recordingCanvas.width = Math.max(1, stageCanvas.width);
+    recordingCanvas.height = Math.max(1, stageCanvas.height);
     drawRecordingFrame();
-    canvasStream = recordingCanvas.captureStream(30);
+    const recordingFps = 60;
+    canvasStream = recordingCanvas.captureStream(recordingFps);
     const audioTracks = audioState.recordingDestination.stream.getAudioTracks();
     const stream = new MediaStream([...canvasStream.getVideoTracks(), ...audioTracks]);
     const chunks = [];
     const mimeType = preferredRecordingType();
     const recorder = new MediaRecorder(stream, {
       ...(mimeType ? { mimeType } : {}),
-      videoBitsPerSecond: 5_500_000,
-      audioBitsPerSecond: 192_000,
+      videoBitsPerSecond: Math.min(50_000_000, Math.max(8_000_000, Math.round(recordingCanvas.width * recordingCanvas.height * recordingFps * 0.16))),
+      audioBitsPerSecond: 256_000,
     });
     recorder.addEventListener('dataavailable', (event) => { if (event.data.size) chunks.push(event.data); });
     recorder.addEventListener('error', () => showToast('Во время записи произошла ошибка.'));
@@ -530,8 +518,13 @@ function animate(timestamp) {
   stage.update(frame);
   brain.update(frame);
   if (recording) {
-    drawRecordingFrame();
-    $('record-label').textContent = `Остановить · ${formatTime((performance.now() - recording.startedAt) / 1000)}`;
+    if (stageCanvas.width !== recordingCanvas.width || stageCanvas.height !== recordingCanvas.height) {
+      stopRecording();
+      showToast('Размер окна изменился. Запись сохранена в исходном разрешении.');
+    } else {
+      drawRecordingFrame();
+      $('record-label').textContent = `Остановить · ${formatTime((performance.now() - recording.startedAt) / 1000)}`;
+    }
   }
   if (timestamp - lastUiUpdate > 50) {
     updateSignalUi();

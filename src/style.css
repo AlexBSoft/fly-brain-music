@@ -12,8 +12,8 @@ button:disabled{cursor:not-allowed;opacity:.48}
 button:focus-visible,input:focus-visible,a:focus-visible{outline:2px solid #97fff2;outline-offset:4px}
 body::after{content:"";position:fixed;inset:0;z-index:30;pointer-events:none;opacity:.055;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.92' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.7'/%3E%3C/svg%3E")}
 
-.app-shell,.workspace{width:100%;height:100vh;height:100dvh;min-height:440px}
-.stage-section{position:relative;width:100%;height:100%;min-height:440px;overflow:hidden;background:radial-gradient(ellipse at 56% 42%,#33244f 0%,#101527 48%,#050710 100%)}
+.app-shell,.workspace{width:100%;height:100vh;height:100dvh;min-height:0}
+.stage-section{position:relative;width:100%;height:100%;min-height:0;overflow:hidden;background:radial-gradient(ellipse at 56% 42%,#33244f 0%,#101527 48%,#050710 100%)}
 .stage-section:fullscreen{width:100vw;height:100vh;min-height:100vh}
 .stage-section::after{content:"";position:absolute;inset:0;z-index:1;pointer-events:none;background:linear-gradient(90deg,#04061278 0%,transparent 26%,transparent 69%,#03061236 100%),linear-gradient(0deg,#040610cc 0%,transparent 25%,transparent 76%,#040610a8 100%)}
 #stage-canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none}
