@@ -134,12 +134,11 @@ function displayDuration(raw) {
 
 function sourceLabel(track) {
   const source = String(track.source || track.sourceType || track.source_type || '').toLowerCase();
-  if (source.includes('youtube')) return 'YOUTUBE';
-  const format = String(track.mimeType || track.mime_type || track.format || track.filename || '').toLowerCase();
-  if (format.includes('mp4')) return 'MP4';
-  return 'АУДИО';
+  const mediaType = String(track.mediaType || track.media_type || '').toLowerCase();
+  const mimeType = String(track.mimeType || track.mime_type || track.format || track.filename || '').toLowerCase();
+  const format = mediaType === 'video' || mimeType.includes('mp4') ? 'MP4' : 'MP3';
+  return source.includes('youtube') ? `YOUTUBE · ${format}` : format;
 }
-
 function linkFor(slug) {
   return new URL(`/p/${encodeURIComponent(slug)}`, window.location.origin).href;
 }
@@ -389,13 +388,14 @@ $('#youtube-form').addEventListener('submit', async (event) => {
     showImportStatus('Нужна ссылка на YouTube.', null, true);
     return;
   }
-  const payload = { url };
+  const format = form.elements.format.value;
+  const payload = { url, format };
   const title = $('#youtube-title').value.trim();
   const artist = $('#youtube-artist').value.trim();
   if (title) payload.title = title;
   if (artist) payload.artist = artist;
   setImportBusy(form, true);
-  showImportStatus('Загружаем и готовим трек. Это может занять несколько минут…');
+  showImportStatus(format === 'video' ? 'Загружаем клип в MP4. Это может занять несколько минут…' : 'Загружаем аудио в MP3. Это может занять несколько минут…');
   try {
     await api('/api/admin/tracks/youtube', { method: 'POST', body: payload });
     showImportStatus('Трек добавлен в медиатеку.', 100);

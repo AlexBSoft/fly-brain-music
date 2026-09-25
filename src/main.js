@@ -572,8 +572,8 @@ async function prepareRadioTrack(track, autoplay) {
   resetAudioAnalysis();
   video.loop = false;
   video.src = track.streamUrl;
-  audioOnly = true;
-  stage.setAudioOnly(true);
+  audioOnly = track.mediaType !== 'video' && !String(track.mimeType || '').startsWith('video/');
+  stage.setAudioOnly(audioOnly);
   video.load();
   previousPixels = null;
   lastVisualSample = 0;

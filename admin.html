@@ -58,9 +58,16 @@
 
               <form id="youtube-form" class="import-form" aria-label="Добавить ссылку YouTube" hidden>
                 <div class="field"><label for="youtube-url">Ссылка на видео</label><input id="youtube-url" name="url" type="url" inputmode="url" required placeholder="https://www.youtube.com/watch?v=…" /></div>
+                <fieldset class="format-picker">
+                  <legend>Что сохранить</legend>
+                  <div class="format-options">
+                    <label class="format-option"><input type="radio" name="format" value="video" checked /><span><strong>Видео MP4</strong><small>Клип на телевизоре</small></span></label>
+                    <label class="format-option"><input type="radio" name="format" value="audio" /><span><strong>Только аудио MP3</strong><small>Звуковая визуализация</small></span></label>
+                  </div>
+                </fieldset>
                 <div class="form-grid"><div class="field"><label for="youtube-title">Название <span class="optional">необязательно</span></label><input id="youtube-title" name="title" type="text" maxlength="160" placeholder="Определим автоматически" /></div><div class="field"><label for="youtube-artist">Артист <span class="optional">необязательно</span></label><input id="youtube-artist" name="artist" type="text" maxlength="100" list="artist-suggestions" placeholder="Определим автоматически" /></div></div>
                 <button id="youtube-submit" class="button button-primary button-wide" type="submit">Добавить по ссылке <span aria-hidden="true">↗</span></button>
-                <p class="hint">Видео до 20 минут. Импорт может занять несколько минут — не закрывайте страницу.</p>
+                <p class="hint">Трек до 20 минут. Видео сохранится в MP4; для режима аудио создадим MP3. Импорт может занять несколько минут.</p>
               </form>
               <datalist id="artist-suggestions"></datalist>
               <div id="import-status" class="import-status" role="status" aria-live="polite" hidden><div class="status-line"><span id="import-status-text">Загрузка…</span><strong id="import-progress-text"></strong></div><div class="progress-track"><div id="import-progress-bar"></div></div></div>

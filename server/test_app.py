@@ -1,11 +1,17 @@
 """API integration tests using a temporary SQLite database and generated media."""
 
+import importlib
+import json
+from pathlib import Path
+import shutil
 import subprocess
 
 import pytest
 from fastapi.testclient import TestClient
 
 from server.app import _validate_youtube_url, _youtube_names, app
+
+app_module = importlib.import_module("server.app")
 
 
 @pytest.fixture
@@ -57,12 +63,14 @@ def test_local_library_radio_feedback_and_delete(client, tmp_path):
         assert response.status_code == 200, response.text
     tracks = client.get("/api/admin/tracks", headers=auth).json()["tracks"]
     assert len(tracks) == 2
+    assert all(track["mediaType"] == "audio" and track["mimeType"] == "audio/mpeg" for track in tracks)
 
     playlists = client.get("/api/playlists").json()["playlists"]
     assert {playlist["slug"] for playlist in playlists} == {"all", artist["slug"]}
     detail = client.get(f"/api/playlists/{artist['slug']}").json()
     assert detail["playlist"]["trackCount"] == 2
     assert len(detail["tracks"]) == 2
+    assert all(track["mediaType"] == "audio" for track in detail["tracks"])
     assert detail["taste"]["favorites"] == []
     first_id = detail["tracks"][0]["id"]
     audio = client.get(f"/api/tracks/{first_id}/audio", headers={"Range": "bytes=0-1023"})
@@ -106,7 +114,7 @@ def test_local_library_radio_feedback_and_delete(client, tmp_path):
     assert client.get(f"/api/tracks/{next_track['id']}/audio").status_code == 404
 
 
-def test_mp4_extraction_and_youtube_url_validation(client, tmp_path):
+def test_mp4_upload_and_youtube_url_validation(client, tmp_path):
     auth = _auth(client)
     movie = tmp_path / "clip.mp4"
     _media(movie, "mp4")
@@ -117,8 +125,24 @@ def test_mp4_extraction_and_youtube_url_validation(client, tmp_path):
             files={"file": (movie.name, stream, "video/mp4")},
         )
     assert response.status_code == 200, response.text
-    url = response.json()["track"]["streamUrl"]
-    assert client.get(url).status_code == 200
+    track = response.json()["track"]
+    assert track["mediaType"] == "video"
+    assert track["mimeType"] == "video/mp4"
+    url = track["streamUrl"]
+    media = client.get(url, headers={"Range": "bytes=0-1023"})
+    assert media.status_code == 206
+    assert media.headers["content-type"] == "video/mp4"
+    assert len(media.content) == 1024
+    stored = tmp_path / "data" / "audio" / f"{track['id']}.mp4"
+    assert stored.is_file()
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,codec_name",
+         "-of", "json", str(stored)], check=True, capture_output=True, text=True,
+    )
+    streams = json.loads(probe.stdout)["streams"]
+    assert any(item["codec_type"] == "video" and item["codec_name"] == "h264" for item in streams)
+    assert any(item["codec_type"] == "audio" and item["codec_name"] == "aac" for item in streams)
+    assert stored.read_bytes().find(b"moov") < stored.read_bytes().find(b"mdat")
     for bad_url in ("https://evil.example/video", "https://youtube.com:bad/watch?v=x", "http://127.0.0.1/file", "https://youtube.com/redirect?q=http://127.0.0.1/"):
         rejected = client.post("/api/admin/tracks/youtube", json={"url": bad_url}, headers=auth)
         assert rejected.status_code == 422
@@ -137,3 +161,45 @@ def test_youtube_artist_title_inference_and_priority():
     assert _youtube_names(tagged, None, None) == ("Название из тегов", "Артист из тегов")
     ordinary = {"title": "Песня без разделителя", "uploader": "Канал"}
     assert _youtube_names(ordinary, None, None) == ("Песня без разделителя", "Канал")
+
+
+def test_youtube_import_defaults_to_video_and_can_extract_audio(client, tmp_path, monkeypatch):
+    auth = _auth(client)
+    movie = tmp_path / "fixture.mp4"
+    song = tmp_path / "fixture.mp3"
+    _media(movie, "mp4")
+    _media(song)
+
+    def fake_run(command, timeout):
+        if command[0] != "yt-dlp":
+            return original_run(command, timeout)
+        if "--dump-single-json" in command:
+            info = {"title": "Артист - Клип", "duration": 2.0, "is_live": False}
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps(info))
+        template = command[command.index("-o") + 1]
+        destination = Path(template.replace("%(ext)s", "mp3" if "--audio-format" in command else "mp4"))
+        shutil.copyfile(song if "--audio-format" in command else movie, destination)
+        return subprocess.CompletedProcess(command, 0, stdout="")
+
+    original_run = app_module._run
+    monkeypatch.setattr(app_module, "_run", fake_run)
+    link = "https://youtu.be/ABCDEFGHIJK"
+    video_response = client.post("/api/admin/tracks/youtube", json={"url": link}, headers=auth)
+    assert video_response.status_code == 200, video_response.text
+    video = video_response.json()["track"]
+    assert video["artist"] == "Артист"
+    assert video["mediaType"] == "video"
+    assert video["mimeType"] == "video/mp4"
+    assert client.get(video["streamUrl"], headers={"Range": "bytes=0-511"}).headers["content-type"] == "video/mp4"
+
+    audio_response = client.post(
+        "/api/admin/tracks/youtube", json={"url": link, "format": "audio"}, headers=auth,
+    )
+    assert audio_response.status_code == 200, audio_response.text
+    audio = audio_response.json()["track"]
+    assert audio["mediaType"] == "audio"
+    assert audio["mimeType"] == "audio/mpeg"
+    assert client.get(audio["streamUrl"], headers={"Range": "bytes=0-511"}).headers["content-type"] == "audio/mpeg"
+    assert client.post(
+        "/api/admin/tracks/youtube", json={"url": link, "format": "mkv"}, headers=auth,
+    ).status_code == 422

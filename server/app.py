@@ -1,4 +1,4 @@
-"""Local audio library and fly-curated playlists for Dr. Stun."""
+"""Local media library and fly-curated playlists for Dr. Stun."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ import tempfile
 import threading
 import time
 import unicodedata
+from typing import Literal
 from urllib.parse import parse_qs, urlparse
 import uuid
 
@@ -216,6 +217,12 @@ def _state(db: sqlite3.Connection, slug: str) -> sqlite3.Row:
     return db.execute("SELECT * FROM playlist_state WHERE slug=?", (slug,)).fetchone()
 
 
+def _media_meta(filename: str) -> tuple[str, str]:
+    if filename.endswith(".mp4"):
+        return "video", "video/mp4"
+    return "audio", "audio/mpeg"
+
+
 def _ranked(db: sqlite3.Connection, slug: str) -> list[dict]:
     state = _state(db, slug)
     preferences = json.loads(state["preferences_json"])
@@ -237,6 +244,8 @@ def _ranked(db: sqlite3.Connection, slug: str) -> list[dict]:
                 "artist": row["artist"],
                 "duration": round(row["duration"], 2),
                 "streamUrl": f"/api/tracks/{row['id']}/audio",
+                "mediaType": _media_meta(row["filename"])[0],
+                "mimeType": _media_meta(row["filename"])[1],
                 "score": round(score, 3),
                 "plays": row["plays"],
                 "affinity": row["affinity"],
@@ -251,7 +260,7 @@ def _ranked(db: sqlite3.Connection, slug: str) -> list[dict]:
 
 
 def _public_track(track: dict) -> dict:
-    return {key: track[key] for key in ("id", "title", "artist", "duration", "streamUrl", "score", "plays")}
+    return {key: track[key] for key in ("id", "title", "artist", "duration", "streamUrl", "mediaType", "mimeType", "score", "plays")}
 
 
 def _taste(db: sqlite3.Connection, slug: str, ranked: list[dict] | None = None) -> dict:
@@ -337,6 +346,7 @@ class YoutubeBody(BaseModel):
     url: str
     title: str | None = None
     artist: str | None = None
+    format: Literal["video", "audio"] = "video"
 
 
 class TrackPatch(BaseModel):
@@ -425,8 +435,9 @@ def track_audio(track_id: str, request: Request):
     # DB filenames are generated UUIDs, never user supplied paths.
     path = request.app.state.config["data_dir"] / "audio" / row["filename"]
     if not path.is_file():
-        raise HTTPException(404, "Audio file missing")
-    return FileResponse(path, media_type="audio/mpeg", filename=f"{track_id}.mp3", content_disposition_type="inline")
+        raise HTTPException(404, "Media file missing")
+    _, mime_type = _media_meta(row["filename"])
+    return FileResponse(path, media_type=mime_type, filename=row["filename"], content_disposition_type="inline")
 
 
 def _client_ip(request: Request) -> str:
@@ -506,7 +517,7 @@ def admin_add_artist(body: ArtistBody, request: Request):
 def admin_tracks(request: Request):
     with _db(request.app) as db:
         rows = db.execute(
-            "SELECT t.id,t.title,t.duration,t.source,t.source_url,t.created_at,a.name AS artist,a.slug AS artist_slug "
+            "SELECT t.id,t.title,t.duration,t.filename,t.source,t.source_url,t.created_at,a.name AS artist,a.slug AS artist_slug "
             "FROM tracks t JOIN artists a ON a.id=t.artist_id ORDER BY t.created_at DESC"
         ).fetchall()
         return {
@@ -514,7 +525,9 @@ def admin_tracks(request: Request):
                 {
                     "id": row["id"], "title": row["title"], "artist": row["artist"],
                     "artistSlug": row["artist_slug"], "duration": round(row["duration"], 2),
-                    "streamUrl": f"/api/tracks/{row['id']}/audio", "source": row["source"],
+                    "streamUrl": f"/api/tracks/{row['id']}/audio",
+                    "mediaType": _media_meta(row["filename"])[0], "mimeType": _media_meta(row["filename"])[1],
+                    "source": row["source"],
                     "sourceUrl": row["source_url"], "createdAt": row["created_at"],
                 }
                 for row in rows
@@ -550,6 +563,65 @@ def _probe(path: Path) -> float:
     return duration
 
 
+def _probe_video(path: Path) -> tuple[float, dict]:
+    result = _run(
+        ["ffprobe", "-v", "error", "-show_entries",
+         "stream=codec_type,codec_name,pix_fmt,width,height:format=duration",
+         "-of", "json", str(path)],
+        30,
+    )
+    if result.returncode:
+        raise HTTPException(422, "Could not read video from file")
+    try:
+        info = json.loads(result.stdout)
+        video = next(stream for stream in info["streams"] if stream.get("codec_type") == "video")
+        next(stream for stream in info["streams"] if stream.get("codec_type") == "audio")
+        duration = float(info["format"]["duration"])
+        if not video.get("width") or not video.get("height"):
+            raise ValueError("invalid video size")
+    except (KeyError, StopIteration, ValueError, TypeError, json.JSONDecodeError) as error:
+        raise HTTPException(422, "Video must contain both picture and sound") from error
+    if not math.isfinite(duration) or not (1 <= duration <= MAX_DURATION_SECONDS):
+        raise HTTPException(422, "Track must be between 1 second and 20 minutes")
+    return duration, info
+
+
+def _to_mp4(source: Path, destination: Path) -> float:
+    _, info = _probe_video(source)
+    video = next(stream for stream in info["streams"] if stream.get("codec_type") == "video")
+    audio = next(stream for stream in info["streams"] if stream.get("codec_type") == "audio")
+    compatible = (
+        video.get("codec_name") == "h264" and video.get("pix_fmt") == "yuv420p"
+        and video["width"] <= 1280 and video["height"] <= 720
+        and audio.get("codec_name") == "aac"
+    )
+    command = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+        "-i", str(source), "-map", "0:v:0", "-map", "0:a:0", "-sn", "-dn",
+        "-map_metadata", "-1",
+    ]
+    if compatible:
+        command += ["-c:v", "copy", "-c:a", "copy"]
+    else:
+        command += [
+            "-vf", "scale=w='min(1280,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "25",
+            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-ac", "2",
+        ]
+    command += ["-movflags", "+faststart", str(destination)]
+    result = _run(command, 420)
+    if result.returncode or not destination.is_file():
+        raise HTTPException(422, "Could not convert file to browser-compatible MP4")
+    if destination.stat().st_size > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "Video exceeds 150 MB")
+    duration, output_info = _probe_video(destination)
+    output_video = next(stream for stream in output_info["streams"] if stream.get("codec_type") == "video")
+    output_audio = next(stream for stream in output_info["streams"] if stream.get("codec_type") == "audio")
+    if output_video.get("codec_name") != "h264" or output_audio.get("codec_name") != "aac":
+        raise HTTPException(422, "Could not create browser-compatible video")
+    return duration
+
+
 def _to_mp3(source: Path, destination: Path) -> float:
     _probe(source)
     result = _run(
@@ -566,7 +638,10 @@ def _save_track(app: FastAPI, converted: Path, title: str, artist_name: str, dur
     title = _clean_text(title, "title")
     artist_name = _clean_text(artist_name, "artist", 100)
     track_id = uuid.uuid4().hex
-    filename = track_id + ".mp3"
+    extension = converted.suffix.lower()
+    if extension not in {".mp3", ".mp4"}:
+        raise HTTPException(422, "Unsupported media format")
+    filename = track_id + extension
     target = app.state.config["data_dir"] / "audio" / filename
     shutil.move(str(converted), target)
     try:
@@ -580,7 +655,8 @@ def _save_track(app: FastAPI, converted: Path, title: str, artist_name: str, dur
     except Exception:
         target.unlink(missing_ok=True)
         raise
-    return {"id": track_id, "title": title, "artist": artist_name, "duration": round(duration, 2), "streamUrl": f"/api/tracks/{track_id}/audio", "score": 0, "plays": 0}
+    media_type, mime_type = _media_meta(filename)
+    return {"id": track_id, "title": title, "artist": artist_name, "duration": round(duration, 2), "streamUrl": f"/api/tracks/{track_id}/audio", "mediaType": media_type, "mimeType": mime_type, "score": 0, "plays": 0}
 
 
 async def _write_upload(file: UploadFile, path: Path):
@@ -611,9 +687,10 @@ async def admin_upload(request: Request, file: UploadFile = File(...), title: st
         with tempfile.TemporaryDirectory(dir=request.app.state.config["data_dir"] / "tmp") as directory:
             folder = Path(directory)
             incoming = folder / ("upload" + extension)
-            converted = folder / "audio.mp3"
+            converted = folder / ("video.mp4" if extension == ".mp4" else "audio.mp3")
             await _write_upload(file, incoming)
-            duration = await asyncio.to_thread(_to_mp3, incoming, converted)
+            converter = _to_mp4 if extension == ".mp4" else _to_mp3
+            duration = await asyncio.to_thread(converter, incoming, converted)
             track = await asyncio.to_thread(_save_track, request.app, converted, title, artist, duration, "upload")
             return {"track": track}
     finally:
@@ -671,7 +748,7 @@ def _youtube_names(info: dict, title_override: str | None, artist_override: str 
     return title, artist
 
 
-def _from_youtube(app: FastAPI, url: str, title_override: str | None, artist_override: str | None) -> dict:
+def _from_youtube(app: FastAPI, url: str, title_override: str | None, artist_override: str | None, media_format: str = "video") -> dict:
     base = _yt_base()
     metadata = _run([*base, "--skip-download", "--dump-single-json", url], 75)
     if metadata.returncode:
@@ -689,19 +766,32 @@ def _from_youtube(app: FastAPI, url: str, title_override: str | None, artist_ove
     with tempfile.TemporaryDirectory(dir=app.state.config["data_dir"] / "tmp") as directory:
         folder = Path(directory)
         template = str(folder / "source.%(ext)s")
-        result = _run(
-            [*base, "--max-filesize", "150M", "--match-filter", "duration <= 1200 & !is_live",
-             "-f", "bestaudio/best", "-x", "--audio-format", "mp3", "--audio-quality", "4", "-o", template, url],
-            360,
-        )
-        files = list(folder.glob("source.mp3"))
-        if result.returncode or not files:
-            raise HTTPException(422, "Could not download or convert this YouTube video")
-        mp3 = files[0]
-        if mp3.stat().st_size > MAX_UPLOAD_BYTES:
-            raise HTTPException(413, "Audio exceeds 150 MB")
-        measured_duration = _probe(mp3)
-        return _save_track(app, mp3, title, artist, measured_duration, "youtube", url)
+        if media_format == "audio":
+            command = [
+                *base, "--max-filesize", "150M", "--match-filter", "duration <= 1200 & !is_live",
+                "-f", "bestaudio/best", "-x", "--audio-format", "mp3", "--audio-quality", "4",
+                "-o", template, url,
+            ]
+            result = _run(command, 360)
+            source = folder / "source.mp3"
+            if result.returncode or not source.is_file():
+                raise HTTPException(422, "Could not download audio from this YouTube video")
+            if source.stat().st_size > MAX_UPLOAD_BYTES:
+                raise HTTPException(413, "Audio exceeds 150 MB")
+            measured_duration = _probe(source)
+            return _save_track(app, source, title, artist, measured_duration, "youtube", url)
+        command = [
+            *base, "--max-filesize", "150M", "--match-filter", "duration <= 1200 & !is_live",
+            "-f", "bv*[vcodec^=avc1][height<=720]+ba[acodec^=mp4a]/b[vcodec^=avc1][height<=720]/bv*[height<=720]+ba/b[height<=720]/best",
+            "--merge-output-format", "mp4", "-o", template, url,
+        ]
+        result = _run(command, 360)
+        sources = [candidate for candidate in folder.glob("source.*") if candidate.is_file()]
+        if result.returncode or len(sources) != 1:
+            raise HTTPException(422, "Could not download video from this YouTube link")
+        converted = folder / "video.mp4"
+        measured_duration = _to_mp4(sources[0], converted)
+        return _save_track(app, converted, title, artist, measured_duration, "youtube", url)
 
 
 @app.post("/api/admin/tracks/youtube", dependencies=[Depends(require_admin)])
@@ -714,7 +804,7 @@ async def admin_youtube(body: YoutubeBody, request: Request):
     if not MEDIA_SLOTS.acquire(blocking=False):
         raise HTTPException(429, "Another upload is being processed; try again soon")
     try:
-        track = await asyncio.to_thread(_from_youtube, request.app, url, body.title, body.artist)
+        track = await asyncio.to_thread(_from_youtube, request.app, url, body.title, body.artist, body.format)
         return {"track": track}
     finally:
         MEDIA_SLOTS.release()
@@ -732,7 +822,8 @@ def admin_patch_track(track_id: str, body: TrackPatch, request: Request):
         artist_name = _clean_text(body.artist, "artist", 100) if body.artist is not None else row["artist"]
         artist = _artist(db, artist_name)
         db.execute("UPDATE tracks SET title=?,artist_id=? WHERE id=?", (title, artist["id"], track_id))
-        return {"track": {"id": track_id, "title": title, "artist": artist["name"], "duration": round(row["duration"], 2), "streamUrl": f"/api/tracks/{track_id}/audio", "score": 0, "plays": 0}}
+        media_type, mime_type = _media_meta(row["filename"])
+        return {"track": {"id": track_id, "title": title, "artist": artist["name"], "duration": round(row["duration"], 2), "streamUrl": f"/api/tracks/{track_id}/audio", "mediaType": media_type, "mimeType": mime_type, "score": 0, "plays": 0}}
 
 
 @app.delete("/api/admin/tracks/{track_id}", dependencies=[Depends(require_admin)])
