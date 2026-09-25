@@ -43,6 +43,15 @@ export function createStage({ canvas, video }) {
   controls.maxAzimuthAngle = 0.72;
   controls.update();
   const initialViewOffset = camera.position.clone().sub(controls.target);
+  const desktopViewTarget = controls.target.clone();
+  // Keep the established three-quarter view in portrait: the fly stays in
+  // profile on the left while the television remains visible on the right.
+  const portraitViewTarget = desktopViewTarget.clone();
+  const portraitViewOffset = initialViewOffset.clone();
+  const savedViews = { desktop: null, portrait: null };
+  let activeView = 'desktop';
+  let lastFramingScale = 1;
+  let recordingQuality = false;
 
   const composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
@@ -576,17 +585,48 @@ export function createStage({ canvas, video }) {
     if (disposed) return;
     const width = Math.max(1, Math.round(canvas.clientWidth || canvas.parentElement?.clientWidth || canvas.width || 1000));
     const height = Math.max(1, Math.round(canvas.clientHeight || canvas.parentElement?.clientHeight || canvas.height || 700));
-    const ratio = Math.min(window.devicePixelRatio || 1, 1.7);
+    const aspect = width / height;
+    const nextView = aspect < 0.82 ? 'portrait' : 'desktop';
+    const isPortrait = nextView === 'portrait';
+    // Ordinary playback stays light on phone GPUs. Recording can render up to
+    // a 1080-pixel-wide 9:16 source, without exceeding the device's native DPR.
+    const nativeRatio = window.devicePixelRatio || 1;
+    const ratio = isPortrait && recordingQuality
+      ? Math.min(nativeRatio, 1080 / width)
+      : Math.min(nativeRatio, isPortrait ? 1.5 : 1.7);
     renderer.setPixelRatio(ratio);
     renderer.setSize(width, height, false);
     composer.setPixelRatio(ratio);
     composer.setSize(width, height);
-    camera.aspect = width / height;
+    camera.aspect = aspect;
     camera.updateProjectionMatrix();
-    const framingScale = Math.min(2.6, Math.max(1, 1.42 / camera.aspect));
-    camera.position.copy(controls.target).addScaledVector(initialViewOffset, framingScale);
-    controls.maxDistance = Math.max(16, initialViewOffset.length() * framingScale * 1.2);
+    const framingScale = isPortrait
+      ? Math.max(1, 1.42 / aspect)
+      : Math.min(2.6, Math.max(1, 1.42 / aspect));
+    if (nextView !== activeView) {
+      savedViews[activeView] = {
+        target: controls.target.clone(),
+        offset: camera.position.clone().sub(controls.target),
+        scale: lastFramingScale,
+      };
+      const restored = savedViews[nextView];
+      controls.target.copy(restored?.target || (isPortrait ? portraitViewTarget : desktopViewTarget));
+      const offset = restored?.offset || (isPortrait ? portraitViewOffset : initialViewOffset);
+      camera.position.copy(controls.target).addScaledVector(offset, restored ? framingScale / restored.scale : framingScale);
+      activeView = nextView;
+    } else {
+      // Preserve the user's orbit and pinch-zoom during browser toolbar
+      // changes, rotations, and desktop window resizing.
+      camera.position.sub(controls.target).multiplyScalar(framingScale / lastFramingScale).add(controls.target);
+    }
+    lastFramingScale = framingScale;
+    controls.maxDistance = Math.max(16, (isPortrait ? portraitViewOffset : initialViewOffset).length() * framingScale * 1.35);
     controls.update();
+  }
+  function setRecordingQuality(enabled) {
+    if (recordingQuality === Boolean(enabled)) return;
+    recordingQuality = Boolean(enabled);
+    resize();
   }
   resize();
 
@@ -865,5 +905,5 @@ export function createStage({ canvas, video }) {
     composer.dispose(); renderer.dispose();
   }
 
-  return { update, setTheme, setAudioOnly, resize, dispose };
+  return { update, setTheme, setAudioOnly, setRecordingQuality, resize, dispose };
 }

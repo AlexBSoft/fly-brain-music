@@ -20,6 +20,15 @@ const bars = Array.from({ length: spectrum ? 32 : 0 }, () => {
 });
 let toastTimer = null;
 let stageFailed = false;
+const PORTRAIT_RECORD_WIDTH = 1080;
+const PORTRAIT_RECORD_HEIGHT = 1920;
+
+function isPortraitStage() {
+  const rect = stageCanvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) return false;
+  return rect.width <= 700 && rect.height > rect.width
+    && Math.abs(rect.width / rect.height - 9 / 16) < 0.035;
+}
 
 const themes = {
   club: { name: 'НОЧНОЙ КЛУБ', short: 'Клуб', id: 'CLUB_01', scene: 'НОЧНОЙ КЛУБ' },
@@ -36,7 +45,7 @@ try {
   $('start-overlay').classList.add('hidden');
   $('system-status').textContent = 'WEBGL НЕДОСТУПЕН';
   showToast('Для сцены нужен браузер с поддержкой WebGL.');
-  stage = { update() {}, resize() {}, setTheme() {}, setAudioOnly() {}, dispose() {} };
+  stage = { update() {}, resize() {}, setTheme() {}, setAudioOnly() {}, setRecordingQuality() {}, dispose() {} };
 }
 const brain = createBrainViz(brainCanvas);
 const debug = createDebugPanel({ panel: $('debug-panel'), toggleButton: $('debug-toggle') });
@@ -80,6 +89,8 @@ let audioOnly = false;
 let recording = null;
 let recordingPending = false;
 let lastRecordingUrl = null;
+let lastRecordingFile = null;
+let lastRecordingShareable = false;
 let seekDragging = false;
 let lastVisualSample = 0;
 let previousPixels = null;
@@ -497,25 +508,35 @@ function drawRecordingFrame() {
   const ctx = recordingContext;
   const width = recordingCanvas.width;
   const height = recordingCanvas.height;
-  ctx.drawImage(stageCanvas, 0, 0, width, height);
+  const stageRect = stageCanvas.getBoundingClientRect();
+  if (!stageRect.width || !stageRect.height) {
+    ctx.drawImage(stageCanvas, 0, 0, width, height);
+    return;
+  }
+
+  // Cover the export frame without distortion. On phones the preview itself
+  // is 9:16, so this is the exact composition the viewer sees.
+  const scale = Math.max(width / stageRect.width, height / stageRect.height);
+  const drawWidth = stageRect.width * scale;
+  const drawHeight = stageRect.height * scale;
+  const offsetX = (width - drawWidth) * 0.5;
+  const offsetY = (height - drawHeight) * 0.5;
+  ctx.drawImage(stageCanvas, offsetX, offsetY, drawWidth, drawHeight);
 
   // Place only the animated neural cloud at its live screen coordinates.
   // UI labels, transport controls and decorative recording titles stay out.
-  const stageRect = stageCanvas.getBoundingClientRect();
   const brainRect = brainCanvas.getBoundingClientRect();
-  if (!stageRect.width || !stageRect.height || !brainRect.width || !brainRect.height) return;
-  const scaleX = width / stageRect.width;
-  const scaleY = height / stageRect.height;
+  if (!brainRect.width || !brainRect.height) return;
   ctx.save();
   ctx.globalAlpha = 0.94;
   ctx.shadowColor = '#7beee8';
-  ctx.shadowBlur = 12 * Math.max(scaleX, scaleY);
+  ctx.shadowBlur = 12 * scale;
   ctx.drawImage(
     brainCanvas,
-    (brainRect.left - stageRect.left) * scaleX,
-    (brainRect.top - stageRect.top) * scaleY,
-    brainRect.width * scaleX,
-    brainRect.height * scaleY,
+    offsetX + (brainRect.left - stageRect.left) * scale,
+    offsetY + (brainRect.top - stageRect.top) * scale,
+    brainRect.width * scale,
+    brainRect.height * scale,
   );
   ctx.restore();
 }
@@ -538,7 +559,8 @@ function preferredRecordingTypes() {
 function resetRecordButton() {
   const preferred = preferredRecordingTypes()[0] || '';
   const format = preferred.startsWith('video/mp4') ? 'MP4' : preferred ? 'WebM' : '';
-  const label = format ? `Записать сцену в ${format}` : 'Записать сцену';
+  const ratio = isPortraitStage() ? ' 9:16' : '';
+  const label = format ? `Записать сцену${ratio} в ${format}` : `Записать сцену${ratio}`;
   $('record-label').textContent = 'Записать';
   $('record-btn').setAttribute('aria-label', label);
   $('record-btn').title = label;
@@ -558,12 +580,18 @@ async function startRecording() {
     if (video.paused) return;
     if (lastRecordingUrl) URL.revokeObjectURL(lastRecordingUrl);
     lastRecordingUrl = null;
+    lastRecordingFile = null;
+    lastRecordingShareable = false;
     $('download-link').hidden = true;
     await ensureAudio();
-    recordingCanvas.width = Math.max(1, stageCanvas.width);
-    recordingCanvas.height = Math.max(1, stageCanvas.height);
+    const portrait = isPortraitStage();
+    stage.setRecordingQuality(portrait);
+    const sourceWidth = stageCanvas.width;
+    const sourceHeight = stageCanvas.height;
+    recordingCanvas.width = portrait ? PORTRAIT_RECORD_WIDTH : Math.max(1, sourceWidth);
+    recordingCanvas.height = portrait ? PORTRAIT_RECORD_HEIGHT : Math.max(1, sourceHeight);
     drawRecordingFrame();
-    const recordingFps = 60;
+    const recordingFps = portrait ? 30 : 60;
     canvasStream = recordingCanvas.captureStream(recordingFps);
     const audioTracks = audioState.recordingDestination.stream.getAudioTracks();
     const stream = new MediaStream([...canvasStream.getVideoTracks(), ...audioTracks]);
@@ -605,6 +633,7 @@ async function startRecording() {
         updatePlaybackState();
       }
       canvasStream.getTracks().forEach((track) => track.stop());
+      if (!recording || recording.recorder === recorder) stage.setRecordingQuality(false);
       if (recordingFailed) return;
       if (!chunks.length) return showToast('Запись не содержит кадров. Попробуйте ещё раз.');
       const actualType = chunks[0]?.type || recorder.mimeType || 'application/octet-stream';
@@ -616,22 +645,41 @@ async function startRecording() {
       const url = URL.createObjectURL(blob);
       lastRecordingUrl = url;
       const link = $('download-link');
+      const filename = `dr-stun-${theme}${portrait ? '-9x16' : ''}-${new Date().toISOString().replace(/[:.]/g, '-')}.${extension}`;
       link.href = url;
-      link.download = `dr-stun-${theme}-${new Date().toISOString().replace(/[:.]/g, '-')}.${extension}`;
-      link.textContent = `↓ Скачать ${extension.toUpperCase()}`;
+      link.download = filename;
+      try {
+        lastRecordingFile = new File([blob], filename, { type: actualType });
+        lastRecordingShareable = portrait && typeof navigator.canShare === 'function'
+          && navigator.canShare({ files: [lastRecordingFile] });
+      } catch (error) {
+        lastRecordingFile = null;
+        lastRecordingShareable = false;
+      }
+      link.textContent = lastRecordingShareable ? '↗ Поделиться видео'
+        : portrait ? '↓ Скачать видео' : `↓ Скачать ${extension.toUpperCase()}`;
       link.hidden = false;
-      link.click();
-      showToast(`Запись ${extension.toUpperCase()} готова. Если скачивание не началось, нажмите «Скачать ${extension.toUpperCase()}».`);
+      if (portrait) {
+        showToast(lastRecordingShareable
+          ? `Видео 9:16 готово в ${extension.toUpperCase()}. Нажмите «Поделиться видео».`
+          : `Видео 9:16 готово в ${extension.toUpperCase()}. Нажмите «Скачать видео».`);
+      } else {
+        link.click();
+        showToast(`Запись ${extension.toUpperCase()} готова. Если скачивание не началось, нажмите «Скачать ${extension.toUpperCase()}».`);
+      }
     }, { once: true });
-    recording = { recorder, stream, startedAt: performance.now() };
+    recording = { recorder, stream, startedAt: performance.now(), portrait, sourceWidth, sourceHeight };
     $('record-btn').classList.add('recording');
     $('record-btn').setAttribute('aria-label', 'Остановить запись');
     $('record-btn').title = 'Остановить запись';
     updatePlaybackState();
-    showToast(`Идёт запись ${recordingFormat} со звуком и нейрокартой.`);
+    showToast(portrait
+      ? `Идёт запись 9:16 · 1080×1920 · ${recordingFormat}.`
+      : `Идёт запись ${recordingFormat} со звуком и нейрокартой.`);
   } catch (error) {
     console.error(error);
     canvasStream?.getTracks().forEach((track) => track.stop());
+    stage.setRecordingQuality(false);
     showToast('Не удалось начать запись в этом браузере.');
   } finally {
     recordingPending = false;
@@ -643,6 +691,7 @@ function stopRecording() {
   if (!recording) return;
   if (recording.recorder.state !== 'inactive') recording.recorder.stop();
   recording = null;
+  stage.setRecordingQuality(false);
   $('record-btn').classList.remove('recording');
   resetRecordButton();
   updatePlaybackState();
@@ -665,9 +714,11 @@ function animate(timestamp) {
   brain.update(frame);
   debug.update(frame.audio, flyMotion);
   if (recording) {
-    if (stageCanvas.width !== recordingCanvas.width || stageCanvas.height !== recordingCanvas.height) {
+    const captureChanged = recording.portrait ? !isPortraitStage()
+      : stageCanvas.width !== recording.sourceWidth || stageCanvas.height !== recording.sourceHeight;
+    if (captureChanged) {
       stopRecording();
-      showToast('Размер окна изменился. Запись сохранена в исходном разрешении.');
+      showToast('Ориентация или размер кадра изменились. Запись сохранена.');
     } else {
       drawRecordingFrame();
       $('record-label').textContent = `Остановить · ${formatTime((performance.now() - recording.startedAt) / 1000)}`;
@@ -689,6 +740,22 @@ $('file-input').addEventListener('change', (event) => {
   event.target.value = '';
 });
 $('record-btn').addEventListener('click', () => recording ? stopRecording() : startRecording());
+$('download-link').addEventListener('click', async (event) => {
+  if (!lastRecordingShareable || !lastRecordingFile) return;
+  event.preventDefault();
+  try {
+    const result = navigator.share({ files: [lastRecordingFile], title: 'Dr. Stun' });
+    if (!result || typeof result.then !== 'function') throw new Error('Share unavailable');
+    await result;
+  } catch (error) {
+    if (error?.name === 'AbortError') return;
+    console.warn('Sharing unavailable:', error);
+    lastRecordingShareable = false;
+    $('download-link').textContent = '↓ Скачать видео';
+    showToast('Не удалось открыть меню. Нажмите ещё раз, чтобы скачать видео.');
+  }
+});
+
 $('mute-btn').addEventListener('click', () => {
   audioState.muted = !audioState.muted;
   if (audioState.gain) audioState.gain.gain.value = audioState.muted ? 0 : audioState.volume;
