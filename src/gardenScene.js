@@ -189,7 +189,7 @@ export function createGardenScene(THREE, initialPalette = {}) {
     return randomSeed / 4294967296;
   };
 
-  function makePlant(x, z, size, kind = 'broad', raised = false) {
+  function makePlant(x, z, size, kind = 'broad', raised = false, bassSpeaker = false) {
     const root = new THREE.Group();
     root.position.set(x, raised ? 0.58 : 0, z);
     group.add(root);
@@ -205,6 +205,7 @@ export function createGardenScene(THREE, initialPalette = {}) {
     const foliage = new THREE.Group();
     foliage.position.y = raised ? 0.03 : 0.43 * size;
     root.add(foliage);
+    if (bassSpeaker) foliage.userData.bassSpeaker = true;
     if (kind === 'fern') {
       const fronds = 8, pairs = 6;
       const stemInstances = new THREE.InstancedMesh(new THREE.CylinderGeometry(1, 1, 1, 5), stemMat, fronds);
@@ -246,7 +247,7 @@ export function createGardenScene(THREE, initialPalette = {}) {
       pinnae.instanceMatrix.needsUpdate = true;
       if (pinnae.instanceColor) pinnae.instanceColor.needsUpdate = true;
       foliage.add(stemInstances, pinnae);
-      swaying.push({ foliage, phase: random() * Math.PI * 2, amount: 0.028 });
+      swaying.push({ foliage, phase: random() * Math.PI * 2, amount: 0.028, bassSpeaker, side: Math.sign(x) });
       return;
     }
     const count = kind === 'sword' ? 9 : 8;
@@ -281,7 +282,7 @@ export function createGardenScene(THREE, initialPalette = {}) {
     stemInstances.instanceMatrix.needsUpdate = true;
     if (leafInstances.instanceColor) leafInstances.instanceColor.needsUpdate = true;
     foliage.add(stemInstances, leafInstances);
-    swaying.push({ foliage, phase: random() * Math.PI * 2, amount: kind === 'sword' ? 0.018 : 0.027 });
+    swaying.push({ foliage, phase: random() * Math.PI * 2, amount: kind === 'sword' ? 0.018 : 0.027, bassSpeaker, side: Math.sign(x) });
   }
 
   for (const side of [-1, 1]) {
@@ -291,8 +292,8 @@ export function createGardenScene(THREE, initialPalette = {}) {
         [1.22, 1.48, 1.18, 1.5, 1.24][i], i % 3 === 1 ? 'sword' : i % 3 === 2 ? 'fern' : 'broad', true);
     }
   }
-  makePlant(-3.55, -6.85, 1.35, 'broad');
-  makePlant(4.52, -6.68, 1.47, 'broad');
+  makePlant(-3.55, -6.85, 1.35, 'broad', false, true);
+  makePlant(4.52, -6.68, 1.47, 'broad', false, true);
   makePlant(-4.66, 0.85, 1.15, 'fern');
   makePlant(5.16, 0.75, 1.12, 'sword');
 
@@ -401,16 +402,53 @@ export function createGardenScene(THREE, initialPalette = {}) {
     for (const light of lamps) light.color.set(palette.secondary);
   }
 
+  let lowDrive = 0;
+  let bassTransient = 0;
+  let bassPhase = 0;
+  let previousBassImpact = 0;
+  let previousGardenTime = null;
+
   function update(time = 0, audio = {}, visual = {}, playing = false) {
     const t = Number.isFinite(time) ? time : 0;
     const air = clamp(audio.air ?? audio.treble);
     const mid = clamp(audio.mid);
     const beat = clamp(audio.beat);
     const motion = clamp(visual.motion);
+    const sub = clamp(audio.sub ?? audio.bass);
+    const bass = clamp(audio.bass);
+    const impact = clamp(audio.bassImpact ?? audio.kick ?? beat);
+    const kick = clamp(audio.kick ?? beat);
+    const delta = previousGardenTime === null ? 1 / 60 :
+      Math.min(0.05, Math.max(0, t - previousGardenTime));
+    previousGardenTime = t;
+    if (playing) {
+      const target = clamp(Math.max(0, sub - 0.12) * 1.1 + bass * 0.22 + impact * 0.58 + kick * 0.18);
+      lowDrive += (target - lowDrive) * (1 - Math.exp(-delta * (target > lowDrive ? 24 : 6.5)));
+      const rise = Math.max(0, impact - previousBassImpact);
+      bassTransient = Math.max(bassTransient * Math.exp(-delta * 12), rise * 1.15);
+      bassPhase += delta * Math.PI * 2 * (3.5 + sub * 1.25);
+      previousBassImpact = impact;
+    } else {
+      lowDrive = 0;
+      bassTransient = 0;
+      previousBassImpact = 0;
+    }
+    // The two plants beside the television behave like soft speaker cones:
+    // a fast outward kick, a short recoil, then sustained low-end vibration.
+    const pump = playing ? Math.max(-0.17, Math.min(0.34,
+      lowDrive * (0.045 + Math.sin(bassPhase) * 0.18) + bassTransient * 0.19 + impact * 0.035,
+    )) : 0;
     const breath = (playing ? 1 : 0.6) * (0.75 + air * 0.18 + motion * 0.12);
     for (const leaf of swaying) {
-      leaf.foliage.rotation.z = Math.sin(t * 0.56 + leaf.phase) * leaf.amount * breath;
-      leaf.foliage.rotation.x = Math.sin(t * 0.41 + leaf.phase * 1.4) * leaf.amount * 0.58 * breath;
+      const localBreath = leaf.bassSpeaker && !playing ? 0 : breath;
+      leaf.foliage.rotation.z = Math.sin(t * 0.56 + leaf.phase) * leaf.amount * localBreath;
+      leaf.foliage.rotation.x = Math.sin(t * 0.41 + leaf.phase * 1.4) * leaf.amount * 0.58 * localBreath;
+      if (leaf.bassSpeaker) {
+        leaf.foliage.scale.set(1 + pump, 1 + pump * 0.48, 1 + pump * 0.9);
+        leaf.foliage.rotation.z += leaf.side * (bassTransient * 0.075 +
+          lowDrive * Math.sin(bassPhase + 0.45) * 0.043);
+        leaf.foliage.rotation.x += lowDrive * Math.sin(bassPhase + leaf.side * 0.22) * 0.032;
+      }
     }
     for (const bloom of flowers) {
       bloom.flower.rotation.z = Math.sin(t * 0.74 + bloom.phase) * (0.018 + mid * 0.015);
