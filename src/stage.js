@@ -534,6 +534,68 @@ export function createStage({ canvas, video }) {
   const dustGeo = new THREE.BufferGeometry(); dustGeo.setAttribute('position', new THREE.BufferAttribute(dustPositions, 3));
   const dustMaterial = new THREE.PointsMaterial({ color: palette.primary, size: 0.042, transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true });
   const dust = new THREE.Points(dustGeo, dustMaterial); scene.add(dust);
+
+  // Portrait-only light canopy and foreground ripples frame the fly and TV.
+  // Geometry is created once; music only animates transforms and materials.
+  const portraitAtmosphere = new THREE.Group();
+  portraitAtmosphere.visible = false;
+  scene.add(portraitAtmosphere);
+  const portraitCanopy = new THREE.Group();
+  portraitAtmosphere.add(portraitCanopy);
+  const portraitStrands = [];
+  for (let i = 0; i < 4; i++) {
+    const points = [];
+    for (let j = 0; j <= 18; j++) {
+      const u = j / 18;
+      points.push(new THREE.Vector3(
+        -5.1 + u * 10.8,
+        7.35 + i * 0.82 + Math.sin(u * Math.PI * 2 + i * 0.7) * 0.16 + Math.sin(u * Math.PI) * 0.21,
+        -0.7 + i * 0.13 + Math.sin(u * Math.PI * 2 + i) * 0.22,
+      ));
+    }
+    const material = new THREE.MeshBasicMaterial({ color: palette.primary, transparent: true, opacity: 0.12, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
+    portraitStrands.push(mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(points), 56, 0.014, 4, false), material, portraitCanopy));
+  }
+  const canopyPositions = new Float32Array(68 * 3);
+  for (let i = 0; i < 68; i++) {
+    canopyPositions[i * 3] = -5.1 + random() * 10.8;
+    canopyPositions[i * 3 + 1] = 7.5 + random() * 2.7;
+    canopyPositions[i * 3 + 2] = -1.1 + random() * 1.8;
+  }
+  const canopyGeometry = new THREE.BufferGeometry();
+  canopyGeometry.setAttribute('position', new THREE.BufferAttribute(canopyPositions, 3));
+  const canopyMaterial = new THREE.PointsMaterial({ color: palette.accent, size: 0.095, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true });
+  portraitCanopy.add(new THREE.Points(canopyGeometry, canopyMaterial));
+
+  const floorGlow = new THREE.ShaderMaterial({
+    uniforms: { uColor: { value: new THREE.Color(palette.primary) }, uStrength: { value: 0.1 } },
+    vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `uniform vec3 uColor; uniform float uStrength; varying vec2 vUv;
+      void main() { vec2 p = (vUv - 0.5) * 2.0; float halo = exp(-dot(p, p) * 3.4);
+      gl_FragColor = vec4(uColor, halo * uStrength);
+      #include <colorspace_fragment>
+      }`,
+    transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, toneMapped: false,
+  });
+  const floorHalo = mesh(new THREE.PlaneGeometry(8, 9), floorGlow, portraitAtmosphere);
+  floorHalo.rotation.x = -Math.PI / 2;
+  floorHalo.position.set(5.5, 0.055, 10.5);
+  const portraitRipples = [];
+  for (const radius of [0.95, 1.7, 2.45]) {
+    const material = new THREE.MeshBasicMaterial({ color: palette.primary, transparent: true, opacity: 0.15, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
+    portraitRipples.push(ring(radius, 0.018, material, 5.5, 0.08, 10.5, portraitAtmosphere, Math.PI / 2));
+  }
+  const floorSparkPositions = new Float32Array(74 * 3);
+  for (let i = 0; i < 74; i++) {
+    floorSparkPositions[i * 3] = 2.0 + random() * 7.1;
+    floorSparkPositions[i * 3 + 1] = 0.1;
+    floorSparkPositions[i * 3 + 2] = 8.0 + random() * 5.5;
+  }
+  const floorSparkGeometry = new THREE.BufferGeometry();
+  floorSparkGeometry.setAttribute('position', new THREE.BufferAttribute(floorSparkPositions, 3));
+  const floorSparkMaterial = new THREE.PointsMaterial({ color: palette.secondary, size: 0.08, transparent: true, opacity: 0.42, blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true });
+  portraitAtmosphere.add(new THREE.Points(floorSparkGeometry, floorSparkMaterial));
+
   let theme = 'club';
   let disposed = false;
   function setTheme(name) {
@@ -554,6 +616,11 @@ export function createStage({ canvas, video }) {
     flyRim.color.set(theme === 'home' ? 0xffd29d : theme === 'garden' ? 0x91ffd6 : 0x71e8ff);
     primaryLight.color.set(colors.primary); secondaryLight.color.set(colors.secondary);
     dustMaterial.color.set(colors.primary); grid.material.color.set(colors.primary);
+    portraitStrands.forEach((strand, index) => strand.material.color.set(colors[index % 2 ? 'secondary' : 'primary']));
+    canopyMaterial.color.set(colors.accent);
+    floorGlow.uniforms.uColor.value.set(theme === 'home' ? colors.secondary : colors.primary);
+    portraitRipples.forEach((ripple, index) => ripple.material.color.set(colors[index % 2 ? 'secondary' : 'primary']));
+    floorSparkMaterial.color.set(colors.secondary);
     for (const { material, role, kind } of roleMats) {
       if (kind === 'emissive') {
         material.emissive.set(colors[role]);
@@ -588,6 +655,7 @@ export function createStage({ canvas, video }) {
     const aspect = width / height;
     const nextView = aspect < 0.82 ? 'portrait' : 'desktop';
     const isPortrait = nextView === 'portrait';
+    portraitAtmosphere.visible = isPortrait;
     // Ordinary playback stays light on phone GPUs. Recording can render up to
     // a 1080-pixel-wide 9:16 source, without exceeding the device's native DPR.
     const nativeRatio = window.devicePixelRatio || 1;
@@ -879,6 +947,25 @@ export function createStage({ canvas, video }) {
     gardenScene.update(t, audio, visual, playing);
     dust.rotation.y = Math.sin(t * 0.055) * 0.015;
     dustMaterial.opacity = 0.43 + treble * 0.5 * activity;
+    if (portraitAtmosphere.visible) {
+      const mood = theme === 'club' ? 1 : theme === 'garden' ? 0.78 : 0.55;
+      const highPulse = (air * 0.6 + onset * 0.45 + vocalPulse * 0.16) * activity;
+      const lowPulse = (sub * 0.4 + bassImpact * 0.75 + beat * 0.24) * activity;
+      portraitCanopy.position.y = Math.sin(t * 0.42) * 0.055;
+      portraitStrands.forEach((strand, index) => {
+        strand.material.opacity = mood * (0.075 + highPulse * (0.08 + index * 0.014));
+      });
+      canopyMaterial.opacity = mood * (0.34 + highPulse * 0.4);
+      canopyMaterial.size = 0.09 + highPulse * 0.045;
+      floorGlow.uniforms.uStrength.value = mood * (0.08 + lowPulse * 0.18 + luma * activity * 0.035);
+      portraitRipples.forEach((ripple, index) => {
+        const wave = (t * 0.14 + index / portraitRipples.length) % 1;
+        ripple.scale.setScalar(0.88 + wave * 0.17 + bassImpact * activity * 0.035);
+        ripple.material.opacity = mood * (0.045 + (1 - wave) * (0.065 + lowPulse * 0.17));
+      });
+      floorSparkMaterial.opacity = mood * (0.25 + lowPulse * 0.5);
+      floorSparkMaterial.size = 0.075 + lowPulse * 0.05;
+    }
     if (audioOnly) {
       tvWaves.draw({ time: t, audio, waveform, frequency, playing });
       audioTexture.needsUpdate = true;

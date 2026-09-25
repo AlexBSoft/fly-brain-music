@@ -153,6 +153,8 @@ body::after{content:"";position:fixed;inset:0;z-index:30;pointer-events:none;opa
   html,body{min-width:0;overscroll-behavior:none}
   .app-shell,.workspace,.stage-section{height:100dvh;min-height:0}
   .stage-section{background:#050710}
+  .stage-viewport::after{background:linear-gradient(90deg,#04061278 0%,transparent 26%,transparent 69%,#03061236 100%),linear-gradient(0deg,#04061048 0%,transparent 19%,transparent 83%,#04061035 100%)}
+  .stage-vignette{box-shadow:inset 0 0 76px 10px #04051040}
   .stage-section:fullscreen{height:100dvh;min-height:0}
   .stage-viewport{inset:auto;left:50%;top:var(--portrait-top);transform:translateX(-50%);width:var(--portrait-width);height:var(--portrait-height);aspect-ratio:9 / 16;background:radial-gradient(ellipse at 50% 45%,#302346,#101527 58%,#050710 100%)}
   .topbar{top:calc(env(safe-area-inset-top) + 12px);left:12px;right:12px}
