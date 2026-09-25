@@ -19,6 +19,7 @@ const SOUND_METRICS = [
 const MOTION_METRICS = [
   { key: 'energy', label: 'Энергия', note: 'общая интенсивность' },
   { key: 'bassShake', label: 'Басовая встряска', note: '← саббас · удар баса' },
+  { key: 'speakerPump', label: 'Диффузоры', note: '← саббас · бочка · удар баса' },
   { key: 'hop', label: 'Прыжок', note: '← бочка · удар баса' },
   { key: 'swagger', label: 'Сваг', note: '← речитатив · присутствие · грув' },
   { key: 'sideStep', label: 'Шаг в сторону', note: '← речитатив · присутствие · грув' },

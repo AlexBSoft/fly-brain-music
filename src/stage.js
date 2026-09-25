@@ -282,23 +282,88 @@ export function createStage({ canvas, video }) {
     wings.push(wing);
   }
 
-  // Side speakers, suspended lamps, and beams make the nightclub legible at a glance.
+  // Four recessed, deforming speaker cones put visible low-end motion in the room.
+  // The outer rubber surround stays fixed while the diaphragm and dust cap travel.
   const club = new THREE.Group(); scene.add(club);
   const equalizers = [];
+  const speakerDrivers = [];
+  const cabinetMat = new THREE.MeshStandardMaterial({ color: 0x242936, emissive: 0x111620, emissiveIntensity: 0.22, metalness: 0.62, roughness: 0.36, flatShading: true });
+  const baffleMat = new THREE.MeshStandardMaterial({ color: 0x171b25, metalness: 0.42, roughness: 0.54 });
+  const coneMat = new THREE.MeshStandardMaterial({ color: 0x454b56, emissive: 0x0b0e15, emissiveIntensity: 0.22, metalness: 0.47, roughness: 0.42, side: THREE.DoubleSide, flatShading: true });
+  const rubberMat = new THREE.MeshStandardMaterial({ color: 0x10131b, metalness: 0.18, roughness: 0.79 });
+  const capMat = new THREE.MeshStandardMaterial({ color: 0x171c27, metalness: 0.72, roughness: 0.17 });
+  const speakerTrimMat = new THREE.MeshStandardMaterial({ color: 0x606c7a, metalness: 0.82, roughness: 0.27 });
+  const speakerCavityMat = new THREE.MeshBasicMaterial({ color: 0x05070d });
+  function makeDiaphragm(radius) {
+    // Radial profile: a shallow cone, a creased outer fold, then its fixed edge.
+    const profile = [
+      [0.17, 0.125, 1], [0.28, 0.108, 1], [0.39, 0.082, 0.88],
+      [0.53, 0.035, 0.66], [0.68, -0.013, 0.37],
+      [0.82, -0.032, 0.16], [0.92, -0.018, 0.035], [0.98, 0.005, 0],
+    ];
+    const segments = 40;
+    const vertices = new Float32Array(profile.length * (segments + 1) * 3);
+    const baseDepth = new Float32Array(profile.length * (segments + 1));
+    const travelWeight = new Float32Array(baseDepth.length);
+    const indices = [];
+    for (let row = 0; row < profile.length; row++) {
+      const [radial, depth, weight] = profile[row];
+      for (let segment = 0; segment <= segments; segment++) {
+        const angle = segment / segments * Math.PI * 2;
+        const vertex = row * (segments + 1) + segment;
+        vertices[vertex * 3] = Math.cos(angle) * radial * radius;
+        vertices[vertex * 3 + 1] = Math.sin(angle) * radial * radius;
+        vertices[vertex * 3 + 2] = depth;
+        baseDepth[vertex] = depth;
+        travelWeight[vertex] = weight;
+      }
+    }
+    for (let row = 0; row < profile.length - 1; row++) {
+      for (let segment = 0; segment < segments; segment++) {
+        const inner = row * (segments + 1) + segment;
+        const outer = (row + 1) * (segments + 1) + segment;
+        indices.push(inner, outer, inner + 1, outer, outer + 1, inner + 1);
+      }
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3).setUsage(THREE.DynamicDrawUsage));
+    geometry.setIndex(indices);
+    geometry.computeVertexNormals();
+    return { geometry, baseDepth, travelWeight };
+  }
   for (const side of [-1, 1]) {
     const sx = TV_X + side * 3.62;
-    const cabinet = box(1.05, 3.0, 0.73, darkMetal, sx, 2.0, -6.05, club);
+    const cabinet = new THREE.Group();
+    cabinet.position.set(sx, 2.0, -6.05);
     cabinet.rotation.y = -side * 0.11;
-    for (const y of [1.28, 2.24]) {
-      const cone = mesh(new THREE.CylinderGeometry(0.47, 0.47, 0.1, 12), edgeMetal, club);
-      cone.rotation.x = Math.PI / 2; cone.position.set(sx, y, -5.62);
-      const woofer = ring(0.39, 0.028, glowMat(y < 2 ? 'secondary' : 'primary', 1.4), sx, y, -5.54, club);
-      equalizers.push(woofer);
-      const center = mesh(new THREE.IcosahedronGeometry(0.24, 1), darkMetal, club);
-      center.position.set(sx, y, -5.51);
+    club.add(cabinet);
+    box(1.42, 3.52, 0.92, cabinetMat, 0, 0, 0, cabinet);
+    box(1.31, 3.39, 0.05, baffleMat, 0, 0, 0.49, cabinet);
+    box(1.36, 0.035, 0.045, speakerTrimMat, 0, 1.67, 0.51, cabinet);
+    box(1.36, 0.035, 0.045, speakerTrimMat, 0, -1.67, 0.51, cabinet);
+    box(0.72, 0.1, 0.015, speakerCavityMat, 0, -1.52, 0.522, cabinet);
+    for (const [y, radius, gain, colorRole] of [[-0.76, 0.58, 1, 'secondary'], [0.69, 0.49, 0.68, 'primary']]) {
+      const driver = new THREE.Group();
+      driver.position.set(0, y, 0.52);
+      cabinet.add(driver);
+      mesh(new THREE.CircleGeometry(radius * 1.07, 48), speakerCavityMat, driver).position.z = 0.001;
+      ring(radius * 1.025, 0.045, speakerTrimMat, 0, 0, 0.025, driver);
+      ring(radius * 0.92, 0.047, rubberMat, 0, 0, 0.035, driver);
+      const lightRing = ring(radius * 1.09, 0.012, glowMat(colorRole, 0.6), 0, 0, 0.048, driver);
+      const { geometry, baseDepth, travelWeight } = makeDiaphragm(radius);
+      mesh(geometry, coneMat, driver).position.z = 0.045;
+      const dustCap = mesh(new THREE.SphereGeometry(radius * 0.29, 20, 12), capMat, driver);
+      dustCap.scale.z = 0.48;
+      dustCap.position.z = 0.17;
+      const capHighlight = ring(radius * 0.23, 0.006, speakerTrimMat, 0, 0, 0.229, driver);
+      for (const angle of [Math.PI / 4, Math.PI * 3 / 4, Math.PI * 5 / 4, Math.PI * 7 / 4]) {
+        const bolt = mesh(new THREE.SphereGeometry(0.025, 8, 5), speakerTrimMat, driver);
+        bolt.position.set(Math.cos(angle) * radius * 1.14, Math.sin(angle) * radius * 1.14, 0.045);
+      }
+      speakerDrivers.push({ geometry, baseDepth, travelWeight, dustCap, capHighlight, lightRing, gain, baseCapZ: 0.17, baseHighlightZ: 0.229 });
     }
     for (let i = 0; i < 12; i++) {
-      const bar = box(0.08, 0.35, 0.08, roleMat(i % 3 ? 'primary' : 'secondary'), sx + side * (0.72 + i * 0.12), 0.31, -6.55, club);
+      const bar = box(0.08, 0.35, 0.08, roleMat(i % 3 ? 'primary' : 'secondary'), side * (0.81 + i * 0.12), -1.69, -0.5, cabinet);
       equalizers.push(bar);
     }
   }
@@ -415,6 +480,11 @@ export function createStage({ canvas, video }) {
 
   // Keep a musical phase running on the media clock even through quiet verses.
   // Detected hits gently correct its timing without becoming the only clock.
+  let speakerDrive = 0;
+  let speakerPhase = 0;
+  let speakerImpulse = 0;
+  let speakerImpulseAt = 0;
+  let previousSpeakerImpact = 0;
   let danceEnergy = 0;
   let bassDrive = 0;
   let verseDrive = 0;
@@ -426,7 +496,7 @@ export function createStage({ canvas, video }) {
   let lastWallTime = performance.now() * 0.001;
   const gestureNames = ['SIDE SLIDE', 'SHOULDER ROLL', 'SWAG WALK', 'HEAD TALK', 'CROSS STEP', 'LOW GROOVE', 'WING SHOW', 'DOUBLE TIME'];
   const motionDiagnostics = {
-    mode: 'IDLE', gesture: gestureNames[0], energy: 0, bassShake: 0,
+    mode: 'IDLE', gesture: gestureNames[0], energy: 0, bassShake: 0, speakerPump: 0,
     hop: 0, swagger: 0, sideStep: 0, shoulderRoll: 0,
     headNod: 0, legStep: 0, wingFlare: 0, antenna: 0,
   };
@@ -475,10 +545,15 @@ export function createStage({ canvas, video }) {
     const mediaDelta = t - lastDanceTime;
     if (mediaDelta < -0.3 || mediaDelta > 2) {
       dancePhase = t * Math.PI * 2 / beatInterval;
+      speakerPhase = 0;
+      speakerImpulse = 0;
+      speakerImpulseAt = t;
+      previousSpeakerImpact = 0;
       detectedBeatAt = -1;
       lastBeatValue = 0;
     } else if (playing && mediaDelta > 0) {
       dancePhase += mediaDelta * Math.PI * 2 / beatInterval;
+      speakerPhase += mediaDelta * Math.PI * 2 * (6.4 + sub * 1.4);
     }
     lastDanceTime = t;
     if (playing && beat > 0.92 && lastBeatValue <= 0.92) {
@@ -590,6 +665,35 @@ export function createStage({ canvas, video }) {
     motionDiagnostics.legStep = clamp(legStep / 1.15);
     motionDiagnostics.wingFlare = clamp(wingOpen / 1.2);
     motionDiagnostics.antenna = clamp(antennaKick * 2.1 + hat * 0.25);
+    // A fast bass envelope drives a lower visual oscillation. Kick attacks
+    // throw the cone outward, then its suspended center recoils into the baffle.
+    const speakerTarget = playing ? clamp(sub * 0.82 + bass * 0.21 + bassImpact * 0.62) : 0;
+    speakerDrive += (speakerTarget - speakerDrive) * (1 - Math.exp(-delta * (speakerTarget > speakerDrive ? 22 : 5.5)));
+    const impactRise = Math.max(0, bassImpact - previousSpeakerImpact);
+    if (playing && impactRise > 0.035) {
+      speakerImpulse = Math.min(1, speakerImpulse + impactRise * 1.15);
+      speakerImpulseAt = t;
+    }
+    previousSpeakerImpact = bassImpact;
+    speakerImpulse *= Math.exp(-delta * 9.5);
+    const oscillation = Math.sin(speakerPhase);
+    const recoil = Math.sin((t - speakerImpulseAt) * Math.PI * 2 * 7.2);
+    const travel = playing ? Math.max(-0.18, Math.min(0.24,
+      speakerDrive * oscillation * 0.16 + speakerImpulse * recoil * 0.1 + bassImpact * 0.105,
+    )) : 0;
+    motionDiagnostics.speakerPump = clamp(Math.abs(travel) / 0.24);
+    for (const driver of speakerDrivers) {
+      const displacement = travel * driver.gain;
+      const positions = driver.geometry.attributes.position.array;
+      for (let vertex = 0; vertex < driver.baseDepth.length; vertex++) {
+        positions[vertex * 3 + 2] = driver.baseDepth[vertex] + displacement * driver.travelWeight[vertex];
+      }
+      driver.geometry.attributes.position.needsUpdate = true;
+      driver.geometry.computeVertexNormals();
+      driver.dustCap.position.z = driver.baseCapZ + displacement;
+      driver.capHighlight.position.z = driver.baseHighlightZ + displacement;
+      driver.lightRing.material.emissiveIntensity = 0.55 + speakerDrive * 1.65 + bassImpact * 0.9;
+    }
     wingMaterial.emissiveIntensity = 0.3 + treble * 1.4 * activity;
     eyeMat.emissiveIntensity = 1.15 + level * 1.5 * activity;
     plinthLip.material.emissiveIntensity = (0.9 + bass * 1.35 * activity) * (theme === 'garden' ? 0.26 : theme === 'orbit' ? 0.7 : 1);
@@ -601,8 +705,8 @@ export function createStage({ canvas, video }) {
       const bar = equalizers[i];
       if (bar.geometry.type === 'BoxGeometry') {
         const value = 0.25 + Math.abs(Math.sin(t * 3.1 + i * 1.32)) * (0.4 + bass * 2.4 + treble * 0.4) * activity;
-        bar.scale.y = value; bar.position.y = 0.17 + 0.175 * value;
-      } else bar.scale.setScalar(1 + bass * 0.08 * activity);
+        bar.scale.y = value; bar.position.y = -1.82 + 0.175 * value;
+      }
     }
     for (let i = 0; i < beams.length; i++) beams[i].rotation.z = Math.sin(t * (0.4 + motion * 0.7) + i * 1.13) * 0.13;
     beamMaterial.opacity = 0.045 + beat * 0.08 * activity;
