@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { createTvWaves } from './tvWaves.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
@@ -150,6 +151,13 @@ export function createStage({ canvas, video }) {
   let posterTexture = null;
   let videoTexture = null;
   let activeTexture = fallbackTexture;
+  let audioOnly = false;
+  const tvWaves = createTvWaves();
+  const audioTexture = new THREE.CanvasTexture(tvWaves.canvas);
+  audioTexture.colorSpace = THREE.SRGBColorSpace;
+  audioTexture.minFilter = THREE.LinearFilter;
+  audioTexture.magFilter = THREE.LinearFilter;
+  audioTexture.generateMipmaps = false;
   const applyTexture = (texture, width, height) => {
     activeTexture = texture;
     const aspect = width > 0 && height > 0 ? width / height : 16 / 9;
@@ -164,9 +172,10 @@ export function createStage({ canvas, video }) {
   new THREE.TextureLoader().load(`${import.meta.env.BASE_URL}media/poster.jpg`, (texture) => {
     texture.colorSpace = THREE.SRGBColorSpace;
     posterTexture = texture;
-    if (!videoTexture || video.readyState < 2) applyTexture(posterTexture, texture.image.width, texture.image.height);
+    if (!audioOnly && (!videoTexture || video.readyState < 2)) applyTexture(posterTexture, texture.image.width, texture.image.height);
   }, undefined, () => {});
   const refreshVideoTexture = () => {
+    if (audioOnly) return;
     if (videoTexture) videoTexture.dispose();
     videoTexture = new THREE.VideoTexture(video);
     videoTexture.colorSpace = THREE.SRGBColorSpace;
@@ -177,12 +186,28 @@ export function createStage({ canvas, video }) {
     else if (posterTexture) applyTexture(posterTexture, posterTexture.image.width, posterTexture.image.height);
   };
   const onVideoReady = () => {
+    if (audioOnly) return;
     if (!videoTexture) refreshVideoTexture();
     if (video.videoWidth && video.readyState >= 2) applyTexture(videoTexture, video.videoWidth, video.videoHeight);
   };
   video.addEventListener('loadedmetadata', refreshVideoTexture);
   video.addEventListener('loadeddata', onVideoReady);
   if (video.videoWidth) refreshVideoTexture();
+
+  function setAudioOnly(value) {
+    const next = Boolean(value);
+    if (audioOnly === next) return;
+    audioOnly = next;
+    if (audioOnly) {
+      applyTexture(audioTexture, tvWaves.canvas.width, tvWaves.canvas.height);
+      videoTexture?.dispose();
+      videoTexture = null;
+    } else {
+      if (posterTexture) applyTexture(posterTexture, posterTexture.image.width, posterTexture.image.height);
+      else applyTexture(fallbackTexture, 16, 9);
+      if (video.readyState >= 2 && video.videoWidth) refreshVideoTexture();
+    }
+  }
 
   // Diffuse light from the picture fades naturally across the glossy floor.
   const reflectionMaterial = new THREE.ShaderMaterial({
@@ -609,7 +634,7 @@ export function createStage({ canvas, video }) {
     }
   }
 
-  function update({ time = 0, audio = {}, visual = {}, playing = false } = {}) {
+  function update({ time = 0, audio = {}, visual = {}, playing = false, waveform, frequency } = {}) {
     if (disposed) return motionDiagnostics;
     const t = Number.isFinite(time) ? time : 0;
     const bass = clamp(audio.bass), mid = clamp(audio.mid), treble = clamp(audio.treble);
@@ -814,6 +839,10 @@ export function createStage({ canvas, video }) {
     gardenScene.update(t, audio, visual, playing);
     dust.rotation.y = Math.sin(t * 0.055) * 0.015;
     dustMaterial.opacity = 0.43 + treble * 0.5 * activity;
+    if (audioOnly) {
+      tvWaves.draw({ time: t, audio, waveform, frequency, playing });
+      audioTexture.needsUpdate = true;
+    }
     controls.update();
     composer.render();
     return motionDiagnostics;
@@ -832,9 +861,9 @@ export function createStage({ canvas, video }) {
     });
     geometries.forEach((geometry) => geometry.dispose());
     materials.forEach((material) => material.dispose());
-    videoTexture?.dispose(); posterTexture?.dispose(); fallbackTexture?.dispose();
+    videoTexture?.dispose(); posterTexture?.dispose(); fallbackTexture?.dispose(); audioTexture.dispose();
     composer.dispose(); renderer.dispose();
   }
 
-  return { update, setTheme, resize, dispose };
+  return { update, setTheme, setAudioOnly, resize, dispose };
 }

@@ -36,7 +36,7 @@ try {
   $('start-overlay').classList.add('hidden');
   $('system-status').textContent = 'WEBGL НЕДОСТУПЕН';
   showToast('Для сцены нужен браузер с поддержкой WebGL.');
-  stage = { update() {}, resize() {}, setTheme() {}, dispose() {} };
+  stage = { update() {}, resize() {}, setTheme() {}, setAudioOnly() {}, dispose() {} };
 }
 const brain = createBrainViz(brainCanvas);
 const debug = createDebugPanel({ panel: $('debug-panel'), toggleButton: $('debug-toggle') });
@@ -76,6 +76,7 @@ const visual = { luma: 0.34, motion: 0.08, hue: 0.55 };
 let metrics = { vision: 0, hearing: 0, motion: 0, focus: 0 };
 let started = false;
 let objectUrl = null;
+let audioOnly = false;
 let recording = null;
 let recordingPending = false;
 let lastRecordingUrl = null;
@@ -375,6 +376,13 @@ function sampleAudio(now) {
 }
 
 function sampleVideo(now) {
+  if (audioOnly) {
+    // Music supplies colour and apparent motion when the media has no frames.
+    visual.luma += (0.19 + signal.level * 0.24 + signal.beat * 0.12 - visual.luma) * 0.12;
+    visual.motion += (clamp(signal.onset * 0.65 + signal.bassImpact * 0.55 + signal.treble * 0.16) - visual.motion) * 0.15;
+    visual.hue += (clamp(0.53 + signal.bass * 0.17 + signal.air * 0.13) - visual.hue) * 0.07;
+    return;
+  }
   if (now - lastVisualSample < 0.09 || !videoProbeContext || video.readyState < 2 || !video.videoWidth) return;
   lastVisualSample = now;
   try {
@@ -455,7 +463,11 @@ function setTheme(nextTheme) {
 }
 
 function loadFile(file) {
-  if (!file || (!file.type.startsWith('video/') && !file.type.startsWith('audio/'))) {
+  const isAudio = Boolean(file && (file.type.startsWith('audio/')
+    || /\.(?:mp3|m4a|aac|wav|ogg|opus|flac)$/i.test(file.name)));
+  const isVideo = Boolean(file && (file.type.startsWith('video/')
+    || /\.(?:mp4|webm|mov|m4v)$/i.test(file.name)));
+  if (!isAudio && !isVideo) {
     showToast('Выберите видео или аудиофайл.');
     return;
   }
@@ -465,18 +477,20 @@ function loadFile(file) {
   if (objectUrl) URL.revokeObjectURL(objectUrl);
   objectUrl = URL.createObjectURL(file);
   video.src = objectUrl;
+  audioOnly = isAudio;
+  stage.setAudioOnly(audioOnly);
   video.load();
   previousPixels = null;
   lastVisualSample = 0;
   started = false;
   $('track-title').textContent = file.name.replace(/\.[^.]+$/, '');
-  $('track-subtitle').textContent = `${file.type.startsWith('audio/') ? 'АУДИОФАЙЛ' : 'ВАШ КЛИП'} · ЛОКАЛЬНОЕ ВОСПРОИЗВЕДЕНИЕ`;
+  $('track-subtitle').textContent = `${audioOnly ? 'АУДИОФАЙЛ' : 'ВАШ КЛИП'} · ЛОКАЛЬНОЕ ВОСПРОИЗВЕДЕНИЕ`;
   $('current-time').textContent = '00:00';
   $('duration').textContent = '00:00';
   $('seek').value = 0;
   $('seek').style.setProperty('--seek-fill', '0%');
   updatePlaybackState();
-  showToast('Клип загружен. Нажмите воспроизведение.');
+  showToast('Файл загружен. Нажмите воспроизведение.');
 }
 
 function drawRecordingFrame() {
@@ -603,7 +617,7 @@ async function startRecording() {
       lastRecordingUrl = url;
       const link = $('download-link');
       link.href = url;
-      link.download = `nocturna-${theme}-${new Date().toISOString().replace(/[:.]/g, '-')}.${extension}`;
+      link.download = `dr-stun-${theme}-${new Date().toISOString().replace(/[:.]/g, '-')}.${extension}`;
       link.textContent = `↓ Скачать ${extension.toUpperCase()}`;
       link.hidden = false;
       link.click();
@@ -639,7 +653,14 @@ function animate(timestamp) {
   sampleAudio(now);
   sampleVideo(now);
   calculateMetrics();
-  const frame = { time: started ? video.currentTime : now, audio: signal, visual, playing: !video.paused && !video.ended };
+  const frame = {
+    time: started ? video.currentTime : now,
+    audio: signal,
+    visual,
+    playing: !video.paused && !video.ended,
+    waveform: audioState.waveform,
+    frequency: audioState.frequency,
+  };
   const flyMotion = stage.update(frame);
   brain.update(frame);
   debug.update(frame.audio, flyMotion);
