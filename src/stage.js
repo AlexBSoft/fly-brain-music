@@ -115,6 +115,25 @@ export function createStage({ canvas, video }) {
   gridGeo.setAttribute('position', new THREE.Float32BufferAttribute(gridPositions, 3));
   const grid = new THREE.LineSegments(gridGeo, new THREE.LineBasicMaterial({ color: palette.primary, transparent: true, opacity: 0.075, depthWrite: false }));
   scene.add(grid);
+  // Continue the existing club grid into the portrait foreground, fading
+  // toward the bottom edge rather than adding a new object of interest.
+  const portraitGridPositions = [];
+  const portraitGridColors = [];
+  for (let x = -9; x <= 9; x += 0.9) {
+    portraitGridPositions.push(x, 0.005, 8.5, x, 0.005, 15.3);
+    portraitGridColors.push(1, 1, 1, 0.08, 0.08, 0.08);
+  }
+  for (let z = 8.6; z <= 15.3; z += 0.9) {
+    portraitGridPositions.push(-9, 0.005, z, 9, 0.005, z);
+    const fade = Math.max(0.08, 1 - (z - 8.5) / 6.8);
+    portraitGridColors.push(fade, fade, fade, fade, fade, fade);
+  }
+  const portraitGridGeo = new THREE.BufferGeometry();
+  portraitGridGeo.setAttribute('position', new THREE.Float32BufferAttribute(portraitGridPositions, 3));
+  portraitGridGeo.setAttribute('color', new THREE.Float32BufferAttribute(portraitGridColors, 3));
+  const portraitGrid = new THREE.LineSegments(portraitGridGeo, new THREE.LineBasicMaterial({ color: palette.primary, vertexColors: true, transparent: true, opacity: 0.052, depthWrite: false }));
+  portraitGrid.visible = false;
+  scene.add(portraitGrid);
   const clubFloorDecor = new THREE.Group();
   scene.add(clubFloorDecor);
   const floorRings = [];
@@ -535,7 +554,7 @@ export function createStage({ canvas, video }) {
   const dustMaterial = new THREE.PointsMaterial({ color: palette.primary, size: 0.042, transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true });
   const dust = new THREE.Points(dustGeo, dustMaterial); scene.add(dust);
 
-  // Portrait-only light canopy and foreground ripples frame the fly and TV.
+  // Portrait-only light canopy fills the air above the TV.
   // Geometry is created once; music only animates transforms and materials.
   const portraitAtmosphere = new THREE.Group();
   portraitAtmosphere.visible = false;
@@ -567,35 +586,6 @@ export function createStage({ canvas, video }) {
   const canopyMaterial = new THREE.PointsMaterial({ color: palette.accent, size: 0.095, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true });
   portraitCanopy.add(new THREE.Points(canopyGeometry, canopyMaterial));
 
-  const floorGlow = new THREE.ShaderMaterial({
-    uniforms: { uColor: { value: new THREE.Color(palette.primary) }, uStrength: { value: 0.1 } },
-    vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-    fragmentShader: `uniform vec3 uColor; uniform float uStrength; varying vec2 vUv;
-      void main() { vec2 p = (vUv - 0.5) * 2.0; float halo = exp(-dot(p, p) * 3.4);
-      gl_FragColor = vec4(uColor, halo * uStrength);
-      #include <colorspace_fragment>
-      }`,
-    transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, toneMapped: false,
-  });
-  const floorHalo = mesh(new THREE.PlaneGeometry(8, 9), floorGlow, portraitAtmosphere);
-  floorHalo.rotation.x = -Math.PI / 2;
-  floorHalo.position.set(5.5, 0.055, 10.5);
-  const portraitRipples = [];
-  for (const radius of [0.95, 1.7, 2.45]) {
-    const material = new THREE.MeshBasicMaterial({ color: palette.primary, transparent: true, opacity: 0.15, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
-    portraitRipples.push(ring(radius, 0.018, material, 5.5, 0.08, 10.5, portraitAtmosphere, Math.PI / 2));
-  }
-  const floorSparkPositions = new Float32Array(74 * 3);
-  for (let i = 0; i < 74; i++) {
-    floorSparkPositions[i * 3] = 2.0 + random() * 7.1;
-    floorSparkPositions[i * 3 + 1] = 0.1;
-    floorSparkPositions[i * 3 + 2] = 8.0 + random() * 5.5;
-  }
-  const floorSparkGeometry = new THREE.BufferGeometry();
-  floorSparkGeometry.setAttribute('position', new THREE.BufferAttribute(floorSparkPositions, 3));
-  const floorSparkMaterial = new THREE.PointsMaterial({ color: palette.secondary, size: 0.08, transparent: true, opacity: 0.42, blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true });
-  portraitAtmosphere.add(new THREE.Points(floorSparkGeometry, floorSparkMaterial));
-
   let theme = 'club';
   let disposed = false;
   function setTheme(name) {
@@ -618,9 +608,8 @@ export function createStage({ canvas, video }) {
     dustMaterial.color.set(colors.primary); grid.material.color.set(colors.primary);
     portraitStrands.forEach((strand, index) => strand.material.color.set(colors[index % 2 ? 'secondary' : 'primary']));
     canopyMaterial.color.set(colors.accent);
-    floorGlow.uniforms.uColor.value.set(theme === 'home' ? colors.secondary : colors.primary);
-    portraitRipples.forEach((ripple, index) => ripple.material.color.set(colors[index % 2 ? 'secondary' : 'primary']));
-    floorSparkMaterial.color.set(colors.secondary);
+    portraitGrid.material.color.set(colors.primary);
+    portraitGrid.visible = theme === 'club' && activeView === 'portrait';
     for (const { material, role, kind } of roleMats) {
       if (kind === 'emissive') {
         material.emissive.set(colors[role]);
@@ -656,6 +645,8 @@ export function createStage({ canvas, video }) {
     const nextView = aspect < 0.82 ? 'portrait' : 'desktop';
     const isPortrait = nextView === 'portrait';
     portraitAtmosphere.visible = isPortrait;
+    portraitGrid.visible = isPortrait && theme === 'club';
+    grid.material.opacity = isPortrait ? 0.06 : 0.075;
     // Ordinary playback stays light on phone GPUs. Recording can render up to
     // a 1080-pixel-wide 9:16 source, without exceeding the device's native DPR.
     const nativeRatio = window.devicePixelRatio || 1;
@@ -950,22 +941,14 @@ export function createStage({ canvas, video }) {
     if (portraitAtmosphere.visible) {
       const mood = theme === 'club' ? 1 : theme === 'garden' ? 0.78 : 0.55;
       const highPulse = (air * 0.6 + onset * 0.45 + vocalPulse * 0.16) * activity;
-      const lowPulse = (sub * 0.4 + bassImpact * 0.75 + beat * 0.24) * activity;
       portraitCanopy.position.y = Math.sin(t * 0.42) * 0.055;
       portraitStrands.forEach((strand, index) => {
-        strand.material.opacity = mood * (0.075 + highPulse * (0.08 + index * 0.014));
+        strand.material.opacity = mood * (0.05 + highPulse * (0.055 + index * 0.01));
       });
       canopyMaterial.opacity = mood * (0.34 + highPulse * 0.4);
       canopyMaterial.size = 0.09 + highPulse * 0.045;
-      floorGlow.uniforms.uStrength.value = mood * (0.08 + lowPulse * 0.18 + luma * activity * 0.035);
-      portraitRipples.forEach((ripple, index) => {
-        const wave = (t * 0.14 + index / portraitRipples.length) % 1;
-        ripple.scale.setScalar(0.88 + wave * 0.17 + bassImpact * activity * 0.035);
-        ripple.material.opacity = mood * (0.045 + (1 - wave) * (0.065 + lowPulse * 0.17));
-      });
-      floorSparkMaterial.opacity = mood * (0.25 + lowPulse * 0.5);
-      floorSparkMaterial.size = 0.075 + lowPulse * 0.05;
     }
+    if (portraitGrid.visible) portraitGrid.material.opacity = 0.038 + bassImpact * activity * 0.018;
     if (audioOnly) {
       tvWaves.draw({ time: t, audio, waveform, frequency, playing });
       audioTexture.needsUpdate = true;
