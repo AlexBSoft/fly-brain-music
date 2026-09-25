@@ -647,7 +647,28 @@ def _validate_youtube_url(raw: str) -> str:
 
 
 def _yt_base() -> list[str]:
-    return ["yt-dlp", "--ignore-config", "--no-playlist", "--max-downloads", "1", "--js-runtimes", "node", "--socket-timeout", "15", "--retries", "2", "--fragment-retries", "2", "--no-progress", "--no-warnings"]
+    return ["yt-dlp", "--ignore-config", "--no-playlist", "--js-runtimes", "node", "--socket-timeout", "15", "--retries", "2", "--fragment-retries", "2", "--no-progress", "--no-warnings"]
+
+
+def _youtube_names(info: dict, title_override: str | None, artist_override: str | None) -> tuple[str, str]:
+    raw_title = info.get("title") or ""
+    tagged_title = info.get("track")
+    tagged_artist = info.get("artist")
+    inferred_artist = None
+    inferred_title = None
+    for separator in (" - ", " " + chr(0x2014) + " ", " " + chr(0x2013) + " "):
+        left, found, right = raw_title.partition(separator)
+        if found and 1 <= len(left.strip()) <= 100 and 1 <= len(right.strip()) <= 140:
+            inferred_artist, inferred_title = left.strip(), right.strip()
+            break
+    # Trust explicit music tags first. A common "Artist - Track" video title is
+    # useful only when those tags are missing; channel/uploader is a last resort.
+    can_use_inferred_title = inferred_artist and (
+        not tagged_artist or inferred_artist.casefold() == str(tagged_artist).strip().casefold()
+    )
+    title = _clean_text(title_override or tagged_title or (inferred_title if can_use_inferred_title else None) or raw_title, "title")
+    artist = _clean_text(artist_override or tagged_artist or inferred_artist or info.get("uploader") or "", "artist", 100)
+    return title, artist
 
 
 def _from_youtube(app: FastAPI, url: str, title_override: str | None, artist_override: str | None) -> dict:
@@ -664,8 +685,7 @@ def _from_youtube(app: FastAPI, url: str, title_override: str | None, artist_ove
         raise HTTPException(422, "Live streams are not supported")
     if not math.isfinite(duration) or not (1 <= duration <= MAX_DURATION_SECONDS):
         raise HTTPException(422, "Track must be between 1 second and 20 minutes")
-    title = _clean_text(title_override or info.get("track") or info.get("title") or "", "title")
-    artist = _clean_text(artist_override or info.get("artist") or info.get("uploader") or "", "artist", 100)
+    title, artist = _youtube_names(info, title_override, artist_override)
     with tempfile.TemporaryDirectory(dir=app.state.config["data_dir"] / "tmp") as directory:
         folder = Path(directory)
         template = str(folder / "source.%(ext)s")

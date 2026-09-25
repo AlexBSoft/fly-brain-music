@@ -5,7 +5,7 @@ import subprocess
 import pytest
 from fastapi.testclient import TestClient
 
-from server.app import _validate_youtube_url, app
+from server.app import _validate_youtube_url, _youtube_names, app
 
 
 @pytest.fixture
@@ -127,3 +127,13 @@ def test_mp4_extraction_and_youtube_url_validation(client, tmp_path):
 def test_canonical_youtube_link_validation():
     assert _validate_youtube_url("https://www.youtube.com/watch?v=ABCDEFGHIJK").startswith("https://")
     assert _validate_youtube_url("https://youtu.be/ABCDEFGHIJK") == "https://youtu.be/ABCDEFGHIJK"
+
+
+def test_youtube_artist_title_inference_and_priority():
+    metadata = {"title": "найтивыход - флэппи пэддл", "track": None, "artist": None, "uploader": "Farrys Faresno"}
+    assert _youtube_names(metadata, None, None) == ("флэппи пэддл", "найтивыход")
+    assert _youtube_names(metadata, "Мой заголовок", "Мой артист") == ("Мой заголовок", "Мой артист")
+    tagged = {**metadata, "track": "Название из тегов", "artist": "Артист из тегов"}
+    assert _youtube_names(tagged, None, None) == ("Название из тегов", "Артист из тегов")
+    ordinary = {"title": "Песня без разделителя", "uploader": "Канал"}
+    assert _youtube_names(ordinary, None, None) == ("Песня без разделителя", "Канал")

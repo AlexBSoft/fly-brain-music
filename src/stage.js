@@ -660,7 +660,7 @@ export function createStage({ canvas, video }) {
     camera.aspect = aspect;
     camera.updateProjectionMatrix();
     const framingScale = isPortrait
-      ? Math.max(1, 1.42 / aspect)
+      ? Math.max(1, 1.25 / aspect)
       : Math.min(2.6, Math.max(1, 1.42 / aspect));
     if (nextView !== activeView) {
       savedViews[activeView] = {
