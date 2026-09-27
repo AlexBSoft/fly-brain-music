@@ -96,9 +96,8 @@ let objectUrl = null;
 let audioOnly = false;
 let recording = null;
 let recordingPending = false;
+let recordingFinalizing = false;
 let lastRecordingUrl = null;
-let lastRecordingFile = null;
-let lastRecordingShareable = false;
 let seekDragging = false;
 let lastVisualSample = 0;
 let previousPixels = null;
@@ -662,6 +661,27 @@ function preferredRecordingTypes() {
     : types;
 }
 
+function probeRecordingDuration(url) {
+  return new Promise((resolve) => {
+    const probe = document.createElement('video');
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      const duration = Number.isFinite(probe.duration) ? probe.duration : null;
+      probe.removeAttribute('src');
+      probe.load();
+      resolve(duration);
+    };
+    const timeout = setTimeout(finish, 2500);
+    probe.addEventListener('loadedmetadata', finish, { once: true });
+    probe.addEventListener('error', finish, { once: true });
+    probe.preload = 'metadata';
+    probe.src = url;
+  });
+}
+
 function resetRecordButton() {
   const preferred = preferredRecordingTypes()[0] || '';
   const format = preferred.startsWith('video/mp4') ? 'MP4' : preferred ? 'WebM' : '';
@@ -673,7 +693,7 @@ function resetRecordButton() {
 }
 
 async function startRecording() {
-  if (recording || recordingPending) return;
+  if (recording || recordingPending || recordingFinalizing) return;
   recordingPending = true;
   $('record-btn').disabled = true;
   let canvasStream;
@@ -686,8 +706,6 @@ async function startRecording() {
     if (video.paused) return;
     if (lastRecordingUrl) URL.revokeObjectURL(lastRecordingUrl);
     lastRecordingUrl = null;
-    lastRecordingFile = null;
-    lastRecordingShareable = false;
     $('download-link').hidden = true;
     await ensureAudio();
     const portrait = isPortraitStage();
@@ -715,7 +733,8 @@ async function startRecording() {
           ...recorderOptions,
           ...(mimeType ? { mimeType } : {}),
         });
-        candidate.start(1000);
+        // A single final Blob avoids fragmented MP4 duration issues on Android.
+        candidate.start();
         recorder = candidate;
         break;
       } catch (error) {
@@ -724,6 +743,7 @@ async function startRecording() {
     }
     if (!recorder) throw new Error('No working recording format');
     const recordingFormat = recorder.mimeType.toLowerCase().includes('mp4') ? 'MP4' : 'WebM';
+    const recordingStartedAt = performance.now();
     let recordingFailed = false;
     recorder.addEventListener('dataavailable', (event) => { if (event.data.size) chunks.push(event.data); });
     recorder.addEventListener('error', (event) => {
@@ -731,7 +751,9 @@ async function startRecording() {
       console.error('Recording failed:', event.error || event);
       showToast(`Запись ${recordingFormat} прервана браузером. Попробуйте ещё раз.`);
     });
-    recorder.addEventListener('stop', () => {
+    recorder.addEventListener('stop', async () => {
+      recordingFinalizing = true;
+      $('record-btn').disabled = true;
       if (recording?.recorder === recorder) {
         recording = null;
         $('record-btn').classList.remove('recording');
@@ -739,42 +761,52 @@ async function startRecording() {
         updatePlaybackState();
       }
       canvasStream.getTracks().forEach((track) => track.stop());
-      if (!recording || recording.recorder === recorder) stage.setRecordingQuality(false);
-      if (recordingFailed) return;
-      if (!chunks.length) return showToast('Запись не содержит кадров. Попробуйте ещё раз.');
-      const actualType = chunks[0]?.type || recorder.mimeType || 'application/octet-stream';
-      const lowerType = actualType.toLowerCase();
-      const extension = lowerType.includes('mp4') ? 'mp4'
-        : lowerType.includes('webm') ? 'webm'
-          : lowerType.includes('matroska') ? 'mkv' : 'bin';
-      const blob = new Blob(chunks, { type: actualType });
-      const url = URL.createObjectURL(blob);
-      lastRecordingUrl = url;
-      const link = $('download-link');
-      const filename = `dr-stun-${theme}${portrait ? '-9x16' : ''}-${new Date().toISOString().replace(/[:.]/g, '-')}.${extension}`;
-      link.href = url;
-      link.download = filename;
+      stage.setRecordingQuality(false);
       try {
-        lastRecordingFile = new File([blob], filename, { type: actualType });
-        lastRecordingShareable = portrait && typeof navigator.canShare === 'function'
-          && navigator.canShare({ files: [lastRecordingFile] });
+        if (recordingFailed) return;
+        if (!chunks.length) {
+          showToast('Запись не содержит кадров. Попробуйте ещё раз.');
+          return;
+        }
+        const actualType = chunks[0]?.type || recorder.mimeType || 'application/octet-stream';
+        const lowerType = actualType.toLowerCase();
+        const extension = lowerType.includes('mp4') ? 'mp4'
+          : lowerType.includes('webm') ? 'webm'
+            : lowerType.includes('matroska') ? 'mkv' : 'bin';
+        const blob = new Blob(chunks, { type: actualType });
+        const url = URL.createObjectURL(blob);
+        lastRecordingUrl = url;
+        const link = $('download-link');
+        const filename = `dr-stun-${theme}${portrait ? '-9x16' : ''}-${new Date().toISOString().replace(/[:.]/g, '-')}.${extension}`;
+        link.href = url;
+        link.download = filename;
+        link.textContent = portrait ? '↓ Скачать видео' : `↓ Скачать ${extension.toUpperCase()}`;
+        const elapsedSeconds = (performance.now() - recordingStartedAt) / 1000;
+        const fileSeconds = await probeRecordingDuration(url);
+        link.hidden = false;
+        console.info('Video recording finalized', {
+          type: actualType, bytes: blob.size, chunks: chunks.length,
+          elapsedSeconds: Math.round(elapsedSeconds * 10) / 10, fileSeconds,
+        });
+        if (elapsedSeconds >= 6 && Number.isFinite(fileSeconds) && fileSeconds < elapsedSeconds * 0.7) {
+          showToast(`Браузер сохранил только ${formatTime(fileSeconds)} из ${formatTime(elapsedSeconds)}. Попробуйте другой браузер.`);
+        } else if (portrait) {
+          showToast(`Видео 9:16 готово в ${extension.toUpperCase()}. Нажмите «Скачать видео».`);
+        } else {
+          link.click();
+          showToast(`Запись ${extension.toUpperCase()} готова. Если скачивание не началось, нажмите «Скачать».`);
+        }
       } catch (error) {
-        lastRecordingFile = null;
-        lastRecordingShareable = false;
-      }
-      link.textContent = lastRecordingShareable ? '↗ Поделиться видео'
-        : portrait ? '↓ Скачать видео' : `↓ Скачать ${extension.toUpperCase()}`;
-      link.hidden = false;
-      if (portrait) {
-        showToast(lastRecordingShareable
-          ? `Видео 9:16 готово в ${extension.toUpperCase()}. Нажмите «Поделиться видео».`
-          : `Видео 9:16 готово в ${extension.toUpperCase()}. Нажмите «Скачать видео».`);
-      } else {
-        link.click();
-        showToast(`Запись ${extension.toUpperCase()} готова. Если скачивание не началось, нажмите «Скачать ${extension.toUpperCase()}».`);
+        console.error('Could not finalize recording:', error);
+        showToast('Не удалось подготовить видео. Попробуйте ещё раз.');
+      } finally {
+        recordingFinalizing = false;
+        $('record-btn').disabled = false;
+        resetRecordButton();
+        updatePlaybackState();
       }
     }, { once: true });
-    recording = { recorder, stream, startedAt: performance.now(), portrait, sourceWidth, sourceHeight };
+    recording = { recorder, stream, startedAt: recordingStartedAt, portrait, sourceWidth, sourceHeight };
     $('record-btn').classList.add('recording');
     $('record-btn').setAttribute('aria-label', 'Остановить запись');
     $('record-btn').title = 'Остановить запись';
@@ -795,12 +827,16 @@ async function startRecording() {
 
 function stopRecording() {
   if (!recording) return;
-  if (recording.recorder.state !== 'inactive') recording.recorder.stop();
+  const { recorder } = recording;
   recording = null;
+  recordingFinalizing = true;
+  $('record-btn').disabled = true;
+  if (recorder.state !== 'inactive') recorder.stop();
   stage.setRecordingQuality(false);
   $('record-btn').classList.remove('recording');
   resetRecordButton();
   updatePlaybackState();
+  showToast('Подготавливаем видео…');
 }
 
 function animate(timestamp) {
@@ -847,22 +883,6 @@ $('file-input').addEventListener('change', (event) => {
   event.target.value = '';
 });
 $('record-btn').addEventListener('click', () => recording ? stopRecording() : startRecording());
-$('download-link').addEventListener('click', async (event) => {
-  if (!lastRecordingShareable || !lastRecordingFile) return;
-  event.preventDefault();
-  try {
-    const result = navigator.share({ files: [lastRecordingFile], title: 'Dr. Stun' });
-    if (!result || typeof result.then !== 'function') throw new Error('Share unavailable');
-    await result;
-  } catch (error) {
-    if (error?.name === 'AbortError') return;
-    console.warn('Sharing unavailable:', error);
-    lastRecordingShareable = false;
-    $('download-link').textContent = '↓ Скачать видео';
-    showToast('Не удалось открыть меню. Нажмите ещё раз, чтобы скачать видео.');
-  }
-});
-
 $('mute-btn').addEventListener('click', () => {
   audioState.muted = !audioState.muted;
   if (audioState.gain) audioState.gain.gain.value = audioState.muted ? 0 : audioState.volume;
