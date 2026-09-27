@@ -13,8 +13,6 @@ services:
       - library_data:/data
     expose:
       - "8000"
-    networks:
-      - backend
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/healthz', timeout=3)"]
       interval: 30s
@@ -34,15 +32,7 @@ services:
         condition: service_healthy
     expose:
       - "8080"
-    networks:
-      default:
-        aliases:
-          - dr-stun-web
-      backend:
     restart: unless-stopped
-
-networks:
-  backend:
 
 volumes:
   library_data:
