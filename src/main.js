@@ -665,18 +665,21 @@ function probeRecordingDuration(url) {
   return new Promise((resolve) => {
     const probe = document.createElement('video');
     let settled = false;
-    const finish = () => {
+    const finish = (duration = null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
-      const duration = Number.isFinite(probe.duration) ? probe.duration : null;
       probe.removeAttribute('src');
       probe.load();
       resolve(duration);
     };
-    const timeout = setTimeout(finish, 2500);
-    probe.addEventListener('loadedmetadata', finish, { once: true });
-    probe.addEventListener('error', finish, { once: true });
+    const checkDuration = () => {
+      if (Number.isFinite(probe.duration) && probe.duration > 0) finish(probe.duration);
+    };
+    const timeout = setTimeout(() => finish(), 2500);
+    probe.addEventListener('loadedmetadata', checkDuration);
+    probe.addEventListener('durationchange', checkDuration);
+    probe.addEventListener('error', () => finish(), { once: true });
     probe.preload = 'metadata';
     probe.src = url;
   });
@@ -745,6 +748,8 @@ async function startRecording() {
     const recordingFormat = recorder.mimeType.toLowerCase().includes('mp4') ? 'MP4' : 'WebM';
     const recordingStartedAt = performance.now();
     let recordingFailed = false;
+    let recordingAbandoned = false;
+    let stopTimer = null;
     recorder.addEventListener('dataavailable', (event) => { if (event.data.size) chunks.push(event.data); });
     recorder.addEventListener('error', (event) => {
       recordingFailed = true;
@@ -752,6 +757,10 @@ async function startRecording() {
       showToast(`Запись ${recordingFormat} прервана браузером. Попробуйте ещё раз.`);
     });
     recorder.addEventListener('stop', async () => {
+      clearTimeout(stopTimer);
+      stopTimer = null;
+      canvasStream.getTracks().forEach((track) => track.stop());
+      if (recordingAbandoned) return;
       recordingFinalizing = true;
       $('record-btn').disabled = true;
       if (recording?.recorder === recorder) {
@@ -760,7 +769,6 @@ async function startRecording() {
         resetRecordButton();
         updatePlaybackState();
       }
-      canvasStream.getTracks().forEach((track) => track.stop());
       stage.setRecordingQuality(false);
       try {
         if (recordingFailed) return;
@@ -790,6 +798,8 @@ async function startRecording() {
         });
         if (elapsedSeconds >= 6 && Number.isFinite(fileSeconds) && fileSeconds < elapsedSeconds * 0.7) {
           showToast(`Браузер сохранил только ${formatTime(fileSeconds)} из ${formatTime(elapsedSeconds)}. Попробуйте другой браузер.`);
+        } else if (elapsedSeconds >= 6 && extension === 'mp4' && fileSeconds === null) {
+          showToast('Видео готово, но браузер не подтвердил длительность. Проверьте файл после скачивания.');
         } else if (portrait) {
           showToast(`Видео 9:16 готово в ${extension.toUpperCase()}. Нажмите «Скачать видео».`);
         } else {
@@ -806,7 +816,15 @@ async function startRecording() {
         updatePlaybackState();
       }
     }, { once: true });
-    recording = { recorder, stream, startedAt: recordingStartedAt, portrait, sourceWidth, sourceHeight };
+    recording = {
+      recorder, stream, startedAt: recordingStartedAt, portrait, sourceWidth, sourceHeight,
+      armStopWatchdog(callback) { stopTimer = setTimeout(callback, 15000); },
+      clearStopWatchdog() { clearTimeout(stopTimer); stopTimer = null; },
+      abandon() {
+        recordingAbandoned = true;
+        canvasStream.getTracks().forEach((track) => track.stop());
+      },
+    };
     $('record-btn').classList.add('recording');
     $('record-btn').setAttribute('aria-label', 'Остановить запись');
     $('record-btn').title = 'Остановить запись';
@@ -827,16 +845,33 @@ async function startRecording() {
 
 function stopRecording() {
   if (!recording) return;
-  const { recorder } = recording;
+  const active = recording;
+  const { recorder } = active;
   recording = null;
   recordingFinalizing = true;
   $('record-btn').disabled = true;
-  if (recorder.state !== 'inactive') recorder.stop();
+  active.armStopWatchdog(() => {
+    active.clearStopWatchdog();
+    active.abandon();
+    recordingFinalizing = false;
+    $('record-btn').disabled = false;
+    showToast('Браузер не завершил запись. Попробуйте ещё раз.');
+  }, 15000);
+  try {
+    if (recorder.state !== 'inactive') recorder.stop();
+    showToast('Подготавливаем видео…');
+  } catch (error) {
+    console.error('Could not stop recording:', error);
+    active.clearStopWatchdog();
+    active.abandon();
+    recordingFinalizing = false;
+    $('record-btn').disabled = false;
+    showToast('Не удалось остановить запись. Попробуйте ещё раз.');
+  }
   stage.setRecordingQuality(false);
   $('record-btn').classList.remove('recording');
   resetRecordButton();
   updatePlaybackState();
-  showToast('Подготавливаем видео…');
 }
 
 function animate(timestamp) {
